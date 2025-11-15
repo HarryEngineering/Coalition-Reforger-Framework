@@ -1,6 +1,38 @@
 class CRF_RplBroadcastManagerClass : ScriptComponentClass {}
 
 //------------------------------------------------------------------------------------------------
+// Enum for slot update field types (batching system)
+//------------------------------------------------------------------------------------------------
+enum CRF_ESlotUpdateField
+{
+	PLAYER_ID,
+	CHARACTER,
+	GROUP,
+	RESOURCE,
+	LOCKED,
+	DEATH
+}
+
+//------------------------------------------------------------------------------------------------
+// Container for queued slot update
+//------------------------------------------------------------------------------------------------
+class CRF_SlotUpdateBatch
+{
+	int m_iSlotId;
+	CRF_ESlotUpdateField m_eFieldType;
+	int m_iIntValue;
+	RplId m_RplIdValue;
+	ResourceName m_ResourceValue;
+	bool m_bBoolValue;
+	
+	void CRF_SlotUpdateBatch(int slotId, CRF_ESlotUpdateField fieldType)
+	{
+		m_iSlotId = slotId;
+		m_eFieldType = fieldType;
+	}
+}
+
+//------------------------------------------------------------------------------------------------
 // Broadcast Manager responsible for handling server-client communications
 //------------------------------------------------------------------------------------------------
 class CRF_RplBroadcastManager : ScriptComponent
@@ -12,6 +44,11 @@ class CRF_RplBroadcastManager : ScriptComponent
 	protected CRF_AdminMenuManager m_AdminMenuManager;
 	protected CRF_BandwidthTelemetryManager m_TelemetryManager;
 	protected static CRF_RplBroadcastManager m_sInstance;
+	
+	// Batching system for slot updates
+	protected ref array<ref CRF_SlotUpdateBatch> m_aPendingSlotUpdates = new array<ref CRF_SlotUpdateBatch>();
+	protected bool m_bBatchingEnabled = true;
+	protected bool m_bFlushScheduled = false;
 	
 	void CRF_RplBroadcastManager(IEntityComponentSource src, IEntity ent, IEntity parent)
 	{
@@ -61,6 +98,170 @@ class CRF_RplBroadcastManager : ScriptComponent
 	}
 	
 	//================================================================================================
+	// BATCHING SYSTEM
+	// Collects multiple slot updates and sends them together to reduce RPC overhead
+	//================================================================================================
+	
+	//------------------------------------------------------------------------------------------------
+	// Queue a slot update for batching
+	//------------------------------------------------------------------------------------------------
+	protected void QueueSlotUpdate(CRF_SlotUpdateBatch batch)
+	{
+		if (!Replication.IsServer())
+			return;
+		
+		// Check if we already have a pending update for this slot+field combination
+		// If so, replace it (latest value wins)
+		for (int i = m_aPendingSlotUpdates.Count() - 1; i >= 0; i--)
+		{
+			CRF_SlotUpdateBatch existing = m_aPendingSlotUpdates[i];
+			if (existing.m_iSlotId == batch.m_iSlotId && existing.m_eFieldType == batch.m_eFieldType)
+			{
+				m_aPendingSlotUpdates.Remove(i);
+				break;
+			}
+		}
+		
+		m_aPendingSlotUpdates.Insert(batch);
+		
+		// Schedule flush if not already scheduled
+		if (!m_bFlushScheduled)
+		{
+			m_bFlushScheduled = true;
+			GetGame().GetCallqueue().CallLater(FlushSlotUpdates, 1, false); // Flush next frame
+		}
+	}
+	
+	//------------------------------------------------------------------------------------------------
+	// Flush all pending slot updates
+	//------------------------------------------------------------------------------------------------
+	protected void FlushSlotUpdates()
+	{
+		if (!Replication.IsServer())
+			return;
+		
+		m_bFlushScheduled = false;
+		
+		if (m_aPendingSlotUpdates.Count() == 0)
+			return;
+		
+		// Process all pending updates
+		foreach (CRF_SlotUpdateBatch batch : m_aPendingSlotUpdates)
+		{
+			switch (batch.m_eFieldType)
+			{
+				case CRF_ESlotUpdateField.PLAYER_ID:
+					SendSlotPlayerIdUpdate(batch.m_iSlotId, batch.m_iIntValue);
+					break;
+				
+				case CRF_ESlotUpdateField.CHARACTER:
+					SendSlotCharacterUpdate(batch.m_iSlotId, batch.m_RplIdValue);
+					break;
+				
+				case CRF_ESlotUpdateField.GROUP:
+					SendSlotGroupUpdate(batch.m_iSlotId, batch.m_RplIdValue);
+					break;
+				
+				case CRF_ESlotUpdateField.RESOURCE:
+					SendSlotResourceUpdate(batch.m_iSlotId, batch.m_ResourceValue);
+					break;
+				
+				case CRF_ESlotUpdateField.LOCKED:
+					SendSlotLockedUpdate(batch.m_iSlotId, batch.m_bBoolValue);
+					break;
+				
+				case CRF_ESlotUpdateField.DEATH:
+					SendSlotDeathUpdate(batch.m_iSlotId, batch.m_bBoolValue);
+					break;
+			}
+		}
+		
+		// Clear the queue
+		m_aPendingSlotUpdates.Clear();
+	}
+	
+	//------------------------------------------------------------------------------------------------
+	// Internal methods that actually send the RPCs (called by flush or immediate mode)
+	//------------------------------------------------------------------------------------------------
+	protected void SendSlotPlayerIdUpdate(int slotId, int playerId)
+	{
+		LogTelemetry("UpdateSlotPlayerIdDelta", 8);
+		#ifdef WORKBENCH
+		RpcDo_UpdateSlotPlayerIdDelta(slotId, playerId);
+		#else
+		Rpc(RpcDo_UpdateSlotPlayerIdDelta, slotId, playerId);
+		#endif
+	}
+	
+	protected void SendSlotCharacterUpdate(int slotId, RplId characterId)
+	{
+		LogTelemetry("UpdateSlotCharacterDelta", 8);
+		#ifdef WORKBENCH
+		RpcDo_UpdateSlotCharacterDelta(slotId, characterId);
+		#else
+		Rpc(RpcDo_UpdateSlotCharacterDelta, slotId, characterId);
+		#endif
+	}
+	
+	protected void SendSlotGroupUpdate(int slotId, RplId groupId)
+	{
+		LogTelemetry("UpdateSlotGroupDelta", 8);
+		#ifdef WORKBENCH
+		RpcDo_UpdateSlotGroupDelta(slotId, groupId);
+		#else
+		Rpc(RpcDo_UpdateSlotGroupDelta, slotId, groupId);
+		#endif
+	}
+	
+	protected void SendSlotResourceUpdate(int slotId, ResourceName resource)
+	{
+		int bytes = 4 + CRF_BandwidthTelemetryManager.EstimateSize_ResourceName(resource);
+		LogTelemetry("UpdateSlotResourceDelta", bytes);
+		#ifdef WORKBENCH
+		RpcDo_UpdateSlotResourceDelta(slotId, resource);
+		#else
+		Rpc(RpcDo_UpdateSlotResourceDelta, slotId, resource);
+		#endif
+	}
+	
+	protected void SendSlotLockedUpdate(int slotId, bool isLocked)
+	{
+		LogTelemetry("UpdateSlotLockedDelta", 5);
+		#ifdef WORKBENCH
+		RpcDo_UpdateSlotLockedDelta(slotId, isLocked);
+		#else
+		Rpc(RpcDo_UpdateSlotLockedDelta, slotId, isLocked);
+		#endif
+	}
+	
+	protected void SendSlotDeathUpdate(int slotId, bool isDead)
+	{
+		LogTelemetry("UpdateSlotDeathDelta", 5);
+		#ifdef WORKBENCH
+		RpcDo_UpdateSlotDeathDelta(slotId, isDead);
+		#else
+		Rpc(RpcDo_UpdateSlotDeathDelta, slotId, isDead);
+		#endif
+	}
+	
+	//------------------------------------------------------------------------------------------------
+	// Enable/disable batching (useful for debugging or critical updates)
+	//------------------------------------------------------------------------------------------------
+	void SetBatchingEnabled(bool enabled)
+	{
+		m_bBatchingEnabled = enabled;
+		
+		// If disabling, flush any pending updates immediately
+		if (!enabled && m_aPendingSlotUpdates.Count() > 0)
+			FlushSlotUpdates();
+	}
+	
+	bool IsBatchingEnabled()
+	{
+		return m_bBatchingEnabled;
+	}
+	
+	//================================================================================================
 	// AUTHORITY BROADCAST METHODS
 	// These methods execute on the server to send data to clients
 	//================================================================================================
@@ -87,6 +288,11 @@ class CRF_RplBroadcastManager : ScriptComponent
 	//------------------------------------------------------------------------------------------------
 	void SendAdminMessage(string data, int playerID)
 	{
+		// Telemetry: string + int
+		int bytes = CRF_BandwidthTelemetryManager.EstimateSize_String(data);
+		bytes += CRF_BandwidthTelemetryManager.EstimateSize_Int();
+		LogTelemetry("SendAdminMessage", bytes);
+		
 		#ifdef WORKBENCH
 		RpcDo_SendAdminMessage(data, playerID);
 		#else
@@ -97,6 +303,12 @@ class CRF_RplBroadcastManager : ScriptComponent
 	//------------------------------------------------------------------------------------------------
 	void ReplyAdminMessage(string data, int playerId, int adminID, bool logAction)
 	{
+		// Telemetry: string + 2 ints + bool
+		int bytes = CRF_BandwidthTelemetryManager.EstimateSize_String(data);
+		bytes += CRF_BandwidthTelemetryManager.EstimateSize_Int() * 2;
+		bytes += CRF_BandwidthTelemetryManager.EstimateSize_Bool();
+		LogTelemetry("ReplyAdminMessage", bytes);
+		
 		#ifdef WORKBENCH
 		RpcDo_ReplyAdminMessage(data, playerId, adminID, logAction);
 		#else
@@ -107,6 +319,11 @@ class CRF_RplBroadcastManager : ScriptComponent
 	//------------------------------------------------------------------------------------------------
 	void CloseAdminTicket(int ticketID, int adminID, bool logAction)
 	{
+		// Telemetry: 2 ints + bool
+		int bytes = CRF_BandwidthTelemetryManager.EstimateSize_Int() * 2;
+		bytes += CRF_BandwidthTelemetryManager.EstimateSize_Bool();
+		LogTelemetry("CloseAdminTicket", bytes);
+		
 		#ifdef WORKBENCH
 		RpcDo_CloseAdminTicket(ticketID, adminID, logAction);
 		#else
@@ -117,6 +334,11 @@ class CRF_RplBroadcastManager : ScriptComponent
 	//------------------------------------------------------------------------------------------------
 	void AssignAdminTicket(int ticketID, int adminID, bool logAction)
 	{
+		// Telemetry: 2 ints + bool
+		int bytes = CRF_BandwidthTelemetryManager.EstimateSize_Int() * 2;
+		bytes += CRF_BandwidthTelemetryManager.EstimateSize_Bool();
+		LogTelemetry("AssignAdminTicket", bytes);
+		
 		#ifdef WORKBENCH
 		RpcDo_AssignAdminTicket(ticketID, adminID, logAction);
 		#else
@@ -132,6 +354,12 @@ class CRF_RplBroadcastManager : ScriptComponent
 		if(player2Char)
 		{
 			vector player2Origin = player2Char.GetOrigin();
+			
+			// Telemetry: 2 ints + vector + bool
+			int bytes = CRF_BandwidthTelemetryManager.EstimateSize_Int() * 2;
+			bytes += CRF_BandwidthTelemetryManager.EstimateSize_Vector();
+			bytes += CRF_BandwidthTelemetryManager.EstimateSize_Bool();
+			LogTelemetry("TeleportPlayers", bytes);
 		
 			#ifdef WORKBENCH
 			RpcDo_TeleportPlayers(playerId1, playerId2, player2Origin, logAction);
@@ -143,12 +371,19 @@ class CRF_RplBroadcastManager : ScriptComponent
 	
 	void BroadcastMessage(string message)
 	{
+		// Telemetry: string
+		int bytes = CRF_BandwidthTelemetryManager.EstimateSize_String(message);
+		LogTelemetry("BroadcastMessage", bytes);
+		
 		Rpc(RpcDo_BroadcastMessage, message);
 	}
 	
 	//------------------------------------------------------------------------------------------------
 	void Closemap(int playerID)
 	{
+		// Telemetry: int
+		LogTelemetry("Closemap", CRF_BandwidthTelemetryManager.EstimateSize_Int());
+		
 		#ifdef WORKBENCH
 		RpcDo_Closemap(playerID);
 		#else
@@ -159,6 +394,9 @@ class CRF_RplBroadcastManager : ScriptComponent
 	//------------------------------------------------------------------------------------------------
 	void HolsterGun(int playerID)
 	{
+		// Telemetry: int
+		LogTelemetry("HolsterGun", CRF_BandwidthTelemetryManager.EstimateSize_Int());
+		
 		#ifdef WORKBENCH
 		RpcDo_HolsterGun(playerID);
 		#else
@@ -169,6 +407,12 @@ class CRF_RplBroadcastManager : ScriptComponent
 	//------------------------------------------------------------------------------------------------
 	void SendHint(string data, int playerId = -1, string factionKey = "")
 	{
+		// Telemetry: 2 strings + int
+		int bytes = CRF_BandwidthTelemetryManager.EstimateSize_String(data);
+		bytes += CRF_BandwidthTelemetryManager.EstimateSize_String(factionKey);
+		bytes += CRF_BandwidthTelemetryManager.EstimateSize_Int();
+		LogTelemetry("SendHint", bytes);
+		
 		#ifdef WORKBENCH
 		RpcDo_SendHint(data, playerId, factionKey);
 		#else
@@ -179,6 +423,12 @@ class CRF_RplBroadcastManager : ScriptComponent
 	//------------------------------------------------------------------------------------------------
 	void LogAdminAction(string data, int playerId, bool sendToPlayer)
 	{
+		// Telemetry: string + int + bool
+		int bytes = CRF_BandwidthTelemetryManager.EstimateSize_String(data);
+		bytes += CRF_BandwidthTelemetryManager.EstimateSize_Int();
+		bytes += CRF_BandwidthTelemetryManager.EstimateSize_Bool();
+		LogTelemetry("LogAdminAction", bytes);
+		
 		#ifdef WORKBENCH
 		RpcDo_LogAdminAction(data, playerId, sendToPlayer);
 		#else
@@ -189,6 +439,11 @@ class CRF_RplBroadcastManager : ScriptComponent
 	//------------------------------------------------------------------------------------------------
 	void SendRespawnScreenUpdate(RplId rplID, bool active)
 	{
+		// Telemetry: RplId + bool
+		int bytes = CRF_BandwidthTelemetryManager.EstimateSize_RplId();
+		bytes += CRF_BandwidthTelemetryManager.EstimateSize_Bool();
+		LogTelemetry("SendRespawnScreenUpdate", bytes);
+		
 		#ifdef WORKBENCH
 		RpcDo_SendRespawnScreenUpdate(rplID, active);
 		#else
@@ -199,6 +454,9 @@ class CRF_RplBroadcastManager : ScriptComponent
 	//------------------------------------------------------------------------------------------------
 	void SendRespawnScreen(int playerId)
 	{
+		// Telemetry: int
+		LogTelemetry("SendRespawnScreen", CRF_BandwidthTelemetryManager.EstimateSize_Int());
+		
 		#ifdef WORKBENCH
 		RpcDo_SendRespawnScreen(playerId);
 		#else
@@ -209,6 +467,9 @@ class CRF_RplBroadcastManager : ScriptComponent
 	//------------------------------------------------------------------------------------------------
 	void SendCharacterLoadingScreen(int playerId)
 	{
+		// Telemetry: int
+		LogTelemetry("SendCharacterLoadingScreen", CRF_BandwidthTelemetryManager.EstimateSize_Int());
+		
 		#ifdef WORKBENCH
 		RpcDo_SendCharacterLoadingScreen(playerId);
 		#else
@@ -219,6 +480,11 @@ class CRF_RplBroadcastManager : ScriptComponent
 	//------------------------------------------------------------------------------------------------
 	void InitilizePlayerBroadcast(int playerId, RplId playerCharID)
 	{
+		// Telemetry: int + RplId
+		int bytes = CRF_BandwidthTelemetryManager.EstimateSize_Int();
+		bytes += CRF_BandwidthTelemetryManager.EstimateSize_RplId();
+		LogTelemetry("InitilizePlayerBroadcast", bytes);
+		
 		#ifdef WORKBENCH
 		RpcDo_InitilizePlayerBroadcast(playerId, playerCharID);
 		#else
@@ -239,6 +505,9 @@ class CRF_RplBroadcastManager : ScriptComponent
 			return;
 		}
 		
+		// Telemetry: 3 ints
+		LogTelemetry("SendRequest", CRF_BandwidthTelemetryManager.EstimateSize_Int() * 3);
+		
 		// Send RPC specifically to the target player
 		Rpc(RpcDo_SendRequest, playerId, requestId, channel);
 	}
@@ -247,6 +516,9 @@ class CRF_RplBroadcastManager : ScriptComponent
 	void NotifyChannelJoinRequest(int targetPlayerId, int requesterId, int channel)
 	{
 		Print(string.Format("[VON] Server notifying player %1 of join request from player %2 for channel %3", targetPlayerId, requesterId, channel), LogLevel.NORMAL);
+		
+		// Telemetry: 3 ints
+		LogTelemetry("NotifyChannelJoinRequest", CRF_BandwidthTelemetryManager.EstimateSize_Int() * 3);
 		
 		#ifdef WORKBENCH
 		RpcDo_NotifyChannelJoinRequest(targetPlayerId, requesterId, channel);
@@ -258,6 +530,9 @@ class CRF_RplBroadcastManager : ScriptComponent
 	//------------------------------------------------------------------------------------------------
 	void TestTargetedBroadcast(int targetPlayerId, int testValue)
 	{
+		// Telemetry: 2 ints
+		LogTelemetry("TestTargetedBroadcast", CRF_BandwidthTelemetryManager.EstimateSize_Int() * 2);
+		
 		#ifdef WORKBENCH
 		RpcDo_TestTargetedBroadcast(targetPlayerId, testValue);
 		#else
@@ -268,6 +543,9 @@ class CRF_RplBroadcastManager : ScriptComponent
 	//------------------------------------------------------------------------------------------------
 	void TestChannelCreatorRPC(int creatorPlayerId)
 	{
+		// Telemetry: int
+		LogTelemetry("TestChannelCreatorRPC", CRF_BandwidthTelemetryManager.EstimateSize_Int());
+		
 		#ifdef WORKBENCH
 		RpcDo_TestChannelCreatorRPC(creatorPlayerId);
 		#else
@@ -278,6 +556,9 @@ class CRF_RplBroadcastManager : ScriptComponent
 	//------------------------------------------------------------------------------------------------
 	void TestBroadcastConnectivity(int testId)
 	{
+		// Telemetry: int
+		LogTelemetry("TestBroadcastConnectivity", CRF_BandwidthTelemetryManager.EstimateSize_Int());
+		
 		#ifdef WORKBENCH
 		RpcDo_TestBroadcastConnectivity(testId);
 		#else
@@ -288,6 +569,9 @@ class CRF_RplBroadcastManager : ScriptComponent
 	//------------------------------------------------------------------------------------------------
 	void ConfirmRequestReceived(int requestId, int channel)
 	{
+		// Telemetry: 2 ints
+		LogTelemetry("ConfirmRequestReceived", CRF_BandwidthTelemetryManager.EstimateSize_Int() * 2);
+		
 		#ifdef WORKBENCH
 		RpcDo_ConfirmRequestReceived(requestId, channel);
 		#else
@@ -298,6 +582,9 @@ class CRF_RplBroadcastManager : ScriptComponent
 	//------------------------------------------------------------------------------------------------
 	void Deny(int playerId, int requestId)
 	{
+		// Telemetry: 2 ints
+		LogTelemetry("Deny", CRF_BandwidthTelemetryManager.EstimateSize_Int() * 2);
+		
 		#ifdef WORKBENCH
 		RpcDo_Deny(playerId, requestId);
 		#else
@@ -308,6 +595,9 @@ class CRF_RplBroadcastManager : ScriptComponent
 	//------------------------------------------------------------------------------------------------
 	void NotifyRequestAccepted(int requesterId)
 	{
+		// Telemetry: int
+		LogTelemetry("NotifyRequestAccepted", CRF_BandwidthTelemetryManager.EstimateSize_Int());
+		
 		#ifdef WORKBENCH
 		RpcDo_NotifyRequestAccepted(requesterId);
 		#else
@@ -318,6 +608,9 @@ class CRF_RplBroadcastManager : ScriptComponent
 	//------------------------------------------------------------------------------------------------
 	void NotifyRequestDenied(int requesterId)
 	{
+		// Telemetry: int
+		LogTelemetry("NotifyRequestDenied", CRF_BandwidthTelemetryManager.EstimateSize_Int());
+		
 		#ifdef WORKBENCH
 		RpcDo_NotifyRequestDenied(requesterId);
 		#else
@@ -328,6 +621,11 @@ class CRF_RplBroadcastManager : ScriptComponent
 	//------------------------------------------------------------------------------------------------
 	void PlayRushMCOMSound(string soundEvent, vector position)
 	{
+		// Telemetry: string + vector
+		int bytes = CRF_BandwidthTelemetryManager.EstimateSize_String(soundEvent);
+		bytes += CRF_BandwidthTelemetryManager.EstimateSize_Vector();
+		LogTelemetry("PlayRushMCOMSound", bytes);
+		
 		#ifdef WORKBENCH
 		RpcDo_PlayRushMCOMSound(soundEvent, position);
 		#else
@@ -338,6 +636,11 @@ class CRF_RplBroadcastManager : ScriptComponent
 	//------------------------------------------------------------------------------------------------
 	void StopRushMCOMSound(string soundEvent, vector position)
 	{
+		// Telemetry: string + vector
+		int bytes = CRF_BandwidthTelemetryManager.EstimateSize_String(soundEvent);
+		bytes += CRF_BandwidthTelemetryManager.EstimateSize_Vector();
+		LogTelemetry("StopRushMCOMSound", bytes);
+		
 		#ifdef WORKBENCH
 		RpcDo_StopRushMCOMSound(soundEvent, position);
 		#else
@@ -348,6 +651,11 @@ class CRF_RplBroadcastManager : ScriptComponent
 	//------------------------------------------------------------------------------------------------
 	void CreateGroupLeaderMarker(int playerId, string groupName)
 	{
+		// Telemetry: int + string
+		int bytes = CRF_BandwidthTelemetryManager.EstimateSize_Int();
+		bytes += CRF_BandwidthTelemetryManager.EstimateSize_String(groupName);
+		LogTelemetry("CreateGroupLeaderMarker", bytes);
+		
 		#ifdef WORKBENCH
 		RpcDo_CreateGroupLeaderMarker(playerId, groupName);
 		#else
@@ -358,6 +666,9 @@ class CRF_RplBroadcastManager : ScriptComponent
 	//------------------------------------------------------------------------------------------------
 	void RemoveGroupLeaderMarker(int playerId)
 	{
+		// Telemetry: int
+		LogTelemetry("RemoveGroupLeaderMarker", CRF_BandwidthTelemetryManager.EstimateSize_Int());
+		
 		#ifdef WORKBENCH
 		RpcDo_RemoveGroupLeaderMarker(playerId);
 		#else
@@ -368,6 +679,9 @@ class CRF_RplBroadcastManager : ScriptComponent
 	//------------------------------------------------------------------------------------------------
 	void ClearAllGroupLeaderMarkers()
 	{
+		// Telemetry: no parameters
+		LogTelemetry("ClearAllGroupLeaderMarkers", 0);
+		
 		#ifdef WORKBENCH
 		RpcDo_ClearAllGroupLeaderMarkers();
 		#else
@@ -378,6 +692,9 @@ class CRF_RplBroadcastManager : ScriptComponent
 	//------------------------------------------------------------------------------------------------
 	void RequestGroupLeaderMarkerState()
 	{
+		// Telemetry: int
+		LogTelemetry("RequestGroupLeaderMarkerState", CRF_BandwidthTelemetryManager.EstimateSize_Int());
+		
 		#ifdef WORKBENCH
 		RpcDo_RequestGroupLeaderMarkerState(SCR_PlayerController.GetLocalPlayerId());
 		#else
@@ -388,6 +705,11 @@ class CRF_RplBroadcastManager : ScriptComponent
 	//------------------------------------------------------------------------------------------------
 	void CreateGroupLeaderMarkerForPlayer(int targetPlayerId, int leaderPlayerId, string groupName)
 	{
+		// Telemetry: 2 ints + string
+		int bytes = CRF_BandwidthTelemetryManager.EstimateSize_Int() * 2;
+		bytes += CRF_BandwidthTelemetryManager.EstimateSize_String(groupName);
+		LogTelemetry("CreateGroupLeaderMarkerForPlayer", bytes);
+		
 		#ifdef WORKBENCH
 		RpcDo_CreateGroupLeaderMarkerForPlayer(targetPlayerId, leaderPlayerId, groupName);
 		#else
@@ -400,6 +722,10 @@ class CRF_RplBroadcastManager : ScriptComponent
 	{
 		if (!Replication.IsServer())
 			return;
+		
+		// Telemetry: string
+		int bytes = CRF_BandwidthTelemetryManager.EstimateSize_String(mcomIdentifier);
+		LogTelemetry("DeleteRushMCOMEntity", bytes);
 			
 		#ifdef WORKBENCH
 		RpcDo_DeleteRushMCOMEntity(mcomIdentifier);
@@ -410,7 +736,12 @@ class CRF_RplBroadcastManager : ScriptComponent
 	
 	//------------------------------------------------------------------------------------------------
 	void MoveSpecCamToSlot(vector slotPos, int playerId)
-	{	
+	{
+		// Telemetry: vector + int
+		int bytes = CRF_BandwidthTelemetryManager.EstimateSize_Vector();
+		bytes += CRF_BandwidthTelemetryManager.EstimateSize_Int();
+		LogTelemetry("MoveSpecCamToSlot", bytes);
+		
 		#ifdef WORKBENCH
 		RpcDo_MoveSpecCamToSlot(slotPos, playerId);
 		#else
@@ -482,6 +813,133 @@ class CRF_RplBroadcastManager : ScriptComponent
 		#else
 		Rpc(RpcDo_AddVehicleSupplyCost, vehicleResource, supplyCost);
 		#endif
+	}
+	
+	//================================================================================================
+	// SLOTTING DELTA UPDATES - OPTIMIZED BANDWIDTH
+	// Individual field updates instead of full container broadcast
+	// Reduces bandwidth by 90%+ compared to UpdateSlotData
+	// Uses batching system to collect and send multiple updates together
+	//================================================================================================
+	
+	//------------------------------------------------------------------------------------------------
+	// SlottingManager: Update slot player ID only (~8 bytes vs 366 bytes)
+	//------------------------------------------------------------------------------------------------
+	void UpdateSlotPlayerIdDelta(int slotId, int playerId)
+	{
+		if (!Replication.IsServer())
+			return;
+		
+		if (m_bBatchingEnabled)
+		{
+			CRF_SlotUpdateBatch batch = new CRF_SlotUpdateBatch(slotId, CRF_ESlotUpdateField.PLAYER_ID);
+			batch.m_iIntValue = playerId;
+			QueueSlotUpdate(batch);
+		}
+		else
+		{
+			SendSlotPlayerIdUpdate(slotId, playerId);
+		}
+	}
+	
+	//------------------------------------------------------------------------------------------------
+	// SlottingManager: Update slot character only (~8 bytes)
+	//------------------------------------------------------------------------------------------------
+	void UpdateSlotCharacterDelta(int slotId, RplId characterId)
+	{
+		if (!Replication.IsServer())
+			return;
+		
+		if (m_bBatchingEnabled)
+		{
+			CRF_SlotUpdateBatch batch = new CRF_SlotUpdateBatch(slotId, CRF_ESlotUpdateField.CHARACTER);
+			batch.m_RplIdValue = characterId;
+			QueueSlotUpdate(batch);
+		}
+		else
+		{
+			SendSlotCharacterUpdate(slotId, characterId);
+		}
+	}
+	
+	//------------------------------------------------------------------------------------------------
+	// SlottingManager: Update slot group only (~8 bytes)
+	//------------------------------------------------------------------------------------------------
+	void UpdateSlotGroupDelta(int slotId, RplId groupId)
+	{
+		if (!Replication.IsServer())
+			return;
+		
+		if (m_bBatchingEnabled)
+		{
+			CRF_SlotUpdateBatch batch = new CRF_SlotUpdateBatch(slotId, CRF_ESlotUpdateField.GROUP);
+			batch.m_RplIdValue = groupId;
+			QueueSlotUpdate(batch);
+		}
+		else
+		{
+			SendSlotGroupUpdate(slotId, groupId);
+		}
+	}
+	
+	//------------------------------------------------------------------------------------------------
+	// SlottingManager: Update slot resource only (~20-60 bytes depending on path length)
+	//------------------------------------------------------------------------------------------------
+	void UpdateSlotResourceDelta(int slotId, ResourceName resource)
+	{
+		if (!Replication.IsServer())
+			return;
+		
+		if (m_bBatchingEnabled)
+		{
+			CRF_SlotUpdateBatch batch = new CRF_SlotUpdateBatch(slotId, CRF_ESlotUpdateField.RESOURCE);
+			batch.m_ResourceValue = resource;
+			QueueSlotUpdate(batch);
+		}
+		else
+		{
+			SendSlotResourceUpdate(slotId, resource);
+		}
+	}
+	
+	//------------------------------------------------------------------------------------------------
+	// SlottingManager: Update slot locked state only (~5 bytes)
+	//------------------------------------------------------------------------------------------------
+	void UpdateSlotLockedDelta(int slotId, bool isLocked)
+	{
+		if (!Replication.IsServer())
+			return;
+		
+		if (m_bBatchingEnabled)
+		{
+			CRF_SlotUpdateBatch batch = new CRF_SlotUpdateBatch(slotId, CRF_ESlotUpdateField.LOCKED);
+			batch.m_bBoolValue = isLocked;
+			QueueSlotUpdate(batch);
+		}
+		else
+		{
+			SendSlotLockedUpdate(slotId, isLocked);
+		}
+	}
+	
+	//------------------------------------------------------------------------------------------------
+	// SlottingManager: Update slot death state only (~5 bytes)
+	//------------------------------------------------------------------------------------------------
+	void UpdateSlotDeathDelta(int slotId, bool isDead)
+	{
+		if (!Replication.IsServer())
+			return;
+		
+		if (m_bBatchingEnabled)
+		{
+			CRF_SlotUpdateBatch batch = new CRF_SlotUpdateBatch(slotId, CRF_ESlotUpdateField.DEATH);
+			batch.m_bBoolValue = isDead;
+			QueueSlotUpdate(batch);
+		}
+		else
+		{
+			SendSlotDeathUpdate(slotId, isDead);
+		}
 	}
 	
 	
@@ -1373,28 +1831,173 @@ class CRF_RplBroadcastManager : ScriptComponent
 	//================================================================================================
 	
 	//------------------------------------------------------------------------------------------------
-	// SlottingManager: Update single slot data on all clients
-	// Replaces full array replication with targeted slot update
-	// Bandwidth: ~370 bytes vs 18,300 bytes (50 slots) = 98% reduction
+	// SlottingManager: Update single slot data on all clients (LEGACY - USE DELTA UPDATES INSTEAD)
+	// 
+	// ⚠️ PERFORMANCE WARNING: This method sends ~366 bytes per call
+	// ⚠️ Use UpdateSlot*Delta() methods instead for 90%+ bandwidth savings:
+	//    - UpdateSlotPlayerIdDelta()   : 8 bytes (vs 366)
+	//    - UpdateSlotCharacterDelta()  : 8 bytes (vs 366)
+	//    - UpdateSlotGroupDelta()      : 8 bytes (vs 366)
+	//    - UpdateSlotResourceDelta()   : ~40 bytes (vs 366)
+	//    - UpdateSlotLockedDelta()     : 5 bytes (vs 366)
+	//    - UpdateSlotDeathDelta()      : 5 bytes (vs 366)
+	//
+	// Only use UpdateSlotData() for:
+	//   - Creating new slots (all fields are new)
+	//   - JIP sync (initial state transmission)
+	//
+	// Bandwidth: ~366 bytes vs 8-40 bytes for delta updates
 	//------------------------------------------------------------------------------------------------
-	void UpdateSlotData(int slotId, CRF_SlotDataContainer slotData)
+	void UpdateSlotData(CRF_SlotDataContainer slotData)
 	{
 		if (!Replication.IsServer())
 			return;
 		
-		// Estimate bandwidth: slotId (4 bytes) + slot data (~366 bytes avg) = ~370 bytes
-		LogTelemetry("UpdateSlotData", 370);
+		// Estimate bandwidth: slot data (~366 bytes avg)
+		LogTelemetry("UpdateSlotData", 366);
 		
-		Rpc(RpcDo_UpdateSlotData, slotId, slotData);
+		RpcDo_UpdateSlotData(slotData);
+		Rpc(RpcDo_UpdateSlotData, slotData);
 	}
 	
 	//------------------------------------------------------------------------------------------------
 	[RplRpc(RplChannel.Reliable, RplRcver.Broadcast)]
-	void RpcDo_UpdateSlotData(int slotId, CRF_SlotDataContainer slotData)
+	void RpcDo_UpdateSlotData(CRF_SlotDataContainer slotData)
 	{
 		CRF_SlottingManager slottingManager = CRF_SlottingManager.GetInstance();
 		if (slottingManager)
-			slottingManager.UpdateSlotDataClient(slotId, slotData);
+			slottingManager.UpdateSlotDataClient(slotData);
+	}
+	
+	//================================================================================================
+	// SLOTTING DELTA UPDATE RPC HANDLERS
+	// Client-side handlers for optimized field-specific updates
+	//================================================================================================
+	
+	//------------------------------------------------------------------------------------------------
+	[RplRpc(RplChannel.Reliable, RplRcver.Broadcast)]
+	void RpcDo_UpdateSlotPlayerIdDelta(int slotId, int playerId)
+	{
+		CRF_SlottingManager slottingManager = CRF_SlottingManager.GetInstance();
+		if (!slottingManager)
+			return;
+		
+		CRF_SlotDataContainer slotData = slottingManager.GetSlotData(slotId);
+		if (slotData)
+		{
+			slotData.SetSlotCurrentPlayerId(playerId);
+			slotData.GetOnDataUpdate().Invoke();
+			
+			// Trigger global slotting update for UI refresh
+			ScriptInvoker invoker = slottingManager.GetOnSlottingUpdate();
+			if (invoker)
+				invoker.Invoke();
+		}
+	}
+	
+	//------------------------------------------------------------------------------------------------
+	[RplRpc(RplChannel.Reliable, RplRcver.Broadcast)]
+	void RpcDo_UpdateSlotCharacterDelta(int slotId, RplId characterId)
+	{
+		CRF_SlottingManager slottingManager = CRF_SlottingManager.GetInstance();
+		if (!slottingManager)
+			return;
+		
+		CRF_SlotDataContainer slotData = slottingManager.GetSlotData(slotId);
+		if (slotData)
+		{
+			slotData.SetSlotCurrentCharacter(characterId);
+			slotData.GetOnDataUpdate().Invoke();
+			
+			// Trigger global slotting update for UI refresh
+			ScriptInvoker invoker = slottingManager.GetOnSlottingUpdate();
+			if (invoker)
+				invoker.Invoke();
+		}
+	}
+	
+	//------------------------------------------------------------------------------------------------
+	[RplRpc(RplChannel.Reliable, RplRcver.Broadcast)]
+	void RpcDo_UpdateSlotGroupDelta(int slotId, RplId groupId)
+	{
+		CRF_SlottingManager slottingManager = CRF_SlottingManager.GetInstance();
+		if (!slottingManager)
+			return;
+		
+		CRF_SlotDataContainer slotData = slottingManager.GetSlotData(slotId);
+		if (slotData)
+		{
+			slotData.SetSlotCurrentGroup(groupId);
+			slotData.GetOnDataUpdate().Invoke();
+			
+			// Trigger global slotting update for UI refresh
+			ScriptInvoker invoker = slottingManager.GetOnSlottingUpdate();
+			if (invoker)
+				invoker.Invoke();
+		}
+	}
+	
+	//------------------------------------------------------------------------------------------------
+	[RplRpc(RplChannel.Reliable, RplRcver.Broadcast)]
+	void RpcDo_UpdateSlotResourceDelta(int slotId, ResourceName resource)
+	{
+		CRF_SlottingManager slottingManager = CRF_SlottingManager.GetInstance();
+		if (!slottingManager)
+			return;
+		
+		CRF_SlotDataContainer slotData = slottingManager.GetSlotData(slotId);
+		if (slotData)
+		{
+			slotData.SetSlotResource(resource);
+			slotData.GetOnDataUpdate().Invoke();
+			
+			// Trigger global slotting update for UI refresh
+			ScriptInvoker invoker = slottingManager.GetOnSlottingUpdate();
+			if (invoker)
+				invoker.Invoke();
+		}
+	}
+	
+	//------------------------------------------------------------------------------------------------
+	[RplRpc(RplChannel.Reliable, RplRcver.Broadcast)]
+	void RpcDo_UpdateSlotLockedDelta(int slotId, bool isLocked)
+	{
+		CRF_SlottingManager slottingManager = CRF_SlottingManager.GetInstance();
+		if (!slottingManager)
+			return;
+		
+		CRF_SlotDataContainer slotData = slottingManager.GetSlotData(slotId);
+		if (slotData)
+		{
+			slotData.SetIsLockedSlot(isLocked);
+			slotData.GetOnDataUpdate().Invoke();
+			
+			// Trigger global slotting update for UI refresh
+			ScriptInvoker invoker = slottingManager.GetOnSlottingUpdate();
+			if (invoker)
+				invoker.Invoke();
+		}
+	}
+	
+	//------------------------------------------------------------------------------------------------
+	[RplRpc(RplChannel.Reliable, RplRcver.Broadcast)]
+	void RpcDo_UpdateSlotDeathDelta(int slotId, bool isDead)
+	{
+		CRF_SlottingManager slottingManager = CRF_SlottingManager.GetInstance();
+		if (!slottingManager)
+			return;
+		
+		CRF_SlotDataContainer slotData = slottingManager.GetSlotData(slotId);
+		if (slotData)
+		{
+			slotData.SetIsDeadSlot(isDead);
+			slotData.GetOnDataUpdate().Invoke();
+			
+			// Trigger global slotting update for UI refresh
+			ScriptInvoker invoker = slottingManager.GetOnSlottingUpdate();
+			if (invoker)
+				invoker.Invoke();
+		}
 	}
 	
 	//------------------------------------------------------------------------------------------------
@@ -1408,6 +2011,7 @@ class CRF_RplBroadcastManager : ScriptComponent
 		// Bandwidth: Just slotId (4 bytes)
 		LogTelemetry("RemoveSlot", 4);
 		
+		RpcDo_RemoveSlot(slotId);
 		Rpc(RpcDo_RemoveSlot, slotId);
 	}
 	
@@ -1418,5 +2022,60 @@ class CRF_RplBroadcastManager : ScriptComponent
 		CRF_SlottingManager slottingManager = CRF_SlottingManager.GetInstance();
 		if (slottingManager)
 			slottingManager.RemoveSlotClient(slotId);
+	}
+	
+	//------------------------------------------------------------------------------------------------
+	// SlottingManager: Notify all clients that slotting phase changed (triggers UI refresh)
+	//------------------------------------------------------------------------------------------------
+	void NotifySlottingPhaseChanged()
+	{
+		if (!Replication.IsServer())
+			return;
+		
+		// Bandwidth: No parameters (0 bytes, just RPC overhead)
+		LogTelemetry("NotifySlottingPhaseChanged", 0);
+		
+		#ifdef WORKBENCH
+		RpcDo_NotifySlottingPhaseChanged();
+		#else
+		Rpc(RpcDo_NotifySlottingPhaseChanged);
+		#endif
+	}
+	
+	//------------------------------------------------------------------------------------------------
+	[RplRpc(RplChannel.Reliable, RplRcver.Broadcast)]
+	void RpcDo_NotifySlottingPhaseChanged()
+	{
+		CRF_SlottingManager slottingManager = CRF_SlottingManager.GetInstance();
+		if (!slottingManager)
+			return;
+		
+		// Trigger global slotting update for UI refresh
+		ScriptInvoker invoker = slottingManager.GetOnSlottingUpdate();
+		if (invoker)
+			invoker.Invoke();
+		
+		Print("[CRF_RplBroadcastManager] Slotting phase changed - UI updated", LogLevel.VERBOSE);
+	}
+	
+	void BroadcastOutro()
+	{
+		#ifdef WORKBENCH
+		RpcDo_BroadcastOutro();
+		#else
+		Rpc(RpcDo_BroadcastOutro);
+		#endif
+	}
+	
+	[RplRpc(RplChannel.Reliable, RplRcver.Broadcast)]
+	void RpcDo_BroadcastOutro()
+	{
+		AudioSystem.PlaySound("{3D7F63CCD32B2F17}Sounds/Intro/outroCrescendo.wav");
+		GetGame().GetCallqueue().CallLater(OpenOutro, 2831, false);
+	}
+	
+	void OpenOutro()
+	{
+		GetGame().GetMenuManager().OpenMenu(ChimeraMenuPreset.CRF_Outro);
 	}
 };

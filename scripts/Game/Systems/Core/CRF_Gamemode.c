@@ -46,6 +46,9 @@ class CRF_Gamemode : SCR_BaseGameMode
 	
 	// General Gamemode Settings
 	//------------------------------------------------------------------------------------
+	[Attribute("0", "auto", "Should this mission go to AAR after)", category: "CRF Gamemode General")]
+	bool m_bUseAAR;
+	
 	[Attribute("45", "auto", "Mission Time (set to -1 to disable)", category: "CRF Gamemode General")]
 	int m_iTimeLimitMinutes;
 
@@ -145,6 +148,8 @@ class CRF_Gamemode : SCR_BaseGameMode
 	protected static CRF_Gamemode m_sInstance;
 	
 	protected ref array<Vehicle> m_aSpawnedVehicles = {};
+	
+	bool m_bIsInEndCredits = false;
 
 	//===================================================================================
 	// STATIC METHODS
@@ -206,8 +211,10 @@ class CRF_Gamemode : SCR_BaseGameMode
 		m_SlottingState += 1;
 		Replication.BumpMe();  // m_SlottingState is [RplProp()] - auto-synced to clients
 		
-		// Note: Individual slot updates are sent via RPC (BroadcastSlotUpdate)
-		// No need to resend all slots when slotting state changes
+		// Notify all clients to refresh their slotting UI
+		CRF_RplBroadcastManager broadcastManager = CRF_RplBroadcastManager.GetInstance();
+		if (broadcastManager)
+			broadcastManager.NotifySlottingPhaseChanged();
 	}
 
 	/**
@@ -306,26 +313,32 @@ class CRF_Gamemode : SCR_BaseGameMode
 			
 			// Process player statistics data
 			ProcessStats(dataCollector,player);
-
-			IEntity playerEntity = GetGame().GetPlayerManager().GetPlayerControlledEntity(player);
-			if (!playerEntity)
-				continue;
 			
-			// Check if player is already dead/spectating
-			bool isPlayerAlreadyDead = CRF_GamemodeManager.IsSpectator(playerEntity);
-			
-			// Move all players to spectator mode for AAR interface and communication
-			// This preserves their actual alive/dead status while allowing AAR participation
-			if (!isPlayerAlreadyDead)
+			if (m_bUseAAR)
 			{
-				// Player is alive - force into spectator for AAR without marking as dead
-				ForcePlayerToSpectatorForAAR(player, playerEntity);
+				IEntity playerEntity = GetGame().GetPlayerManager().GetPlayerControlledEntity(player);
+				if (!playerEntity)
+					continue;
+				
+				// Check if player is already dead/spectating
+				bool isPlayerAlreadyDead = CRF_GamemodeManager.IsSpectator(playerEntity);
+				
+				// Move all players to spectator mode for AAR interface and communication
+				// This preserves their actual alive/dead status while allowing AAR participation
+				if (!isPlayerAlreadyDead)
+				{
+					// Player is alive - force into spectator for AAR without marking as dead
+					ForcePlayerToSpectatorForAAR(player, playerEntity);
+				}
+				// Players already in spectator mode don't need repositioning
+				
+				//Adds them to default channel
+				menuManager.AddPlayerToChannel(player, 1, false);
 			}
-			// Players already in spectator mode don't need repositioning
-			
-			//Adds them to default channel
-			menuManager.AddPlayerToChannel(player, 1, false);
 		}
+		
+		if (!m_bUseAAR)
+			CRF_RplBroadcastManager.GetInstance().BroadcastOutro();
 		
 		// Stores player profiles who havent disconnected
 		dataCollector.OnGameEnd();
