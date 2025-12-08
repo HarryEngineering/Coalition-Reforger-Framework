@@ -11,7 +11,7 @@ class CRF_GearscriptManager : ScriptComponent
 	protected ref map<ResourceName, int> m_mVehicleSupplyCosts = new map<ResourceName, int>;
 	
 	// Resource cache to avoid repeated Resource.Load() calls - PERFORMANCE OPTIMIZATION
-	protected ref map<ResourceName, Resource> m_mResourceCache = new map<ResourceName, Resource>();
+	protected ref map<ResourceName, ref Resource> m_mResourceCache = new map<ResourceName, ref Resource>();
 	
 	//------------------------------------------------------------------------------------------------
 	/**
@@ -62,7 +62,9 @@ class CRF_GearscriptManager : ScriptComponent
 		return;
 	#endif
 	SetEventMask(owner, EntityEvent.FRAME);
-}	array<int> GetSupplyValuesForItems(array<ResourceName> items)
+	}	
+	
+	array<int> GetSupplyValuesForItems(array<ResourceName> items)
 	{
 		// Pre-allocate array capacity - PERFORMANCE OPTIMIZATION
 		array<int> itemSupply = new array<int>();
@@ -79,21 +81,25 @@ class CRF_GearscriptManager : ScriptComponent
 		if (!factionManager)
 			return itemSupply;
 		
-	factionManager.GetFactionsList(factions);
+		factionManager.GetFactionsList(factions);
+		
+		// Pre-allocate catalogs array - PERFORMANCE OPTIMIZATION
+		array<ref SCR_EntityCatalog> itemCatalogs = new array<ref SCR_EntityCatalog>();
+		itemCatalogs.Reserve(factions.Count());
+		
+		// Use cached catalog manager - PERFORMANCE OPTIMIZATION
+		if (!m_CatalogManager)
+			m_CatalogManager = SCR_EntityCatalogManagerComponent.GetInstance();
+		
+		if (!m_CatalogManager)
+			return itemSupply;
 	
-	// Pre-allocate catalogs array - PERFORMANCE OPTIMIZATION
-	array<ref SCR_EntityCatalog> itemCatalogs = new array<ref SCR_EntityCatalog>();
-	itemCatalogs.Reserve(factions.Count());
-	
-	// Use cached catalog manager - PERFORMANCE OPTIMIZATION
-	if (!m_CatalogManager)
-		return itemSupply;
-	
-	foreach (Faction faction: factions)
-	{
-		SCR_EntityCatalog catalog = m_CatalogManager.GetFactionEntityCatalogOfType(EEntityCatalogType.ITEM, faction.GetFactionKey(), false);
-		itemCatalogs.Insert(catalog);
-	}		foreach (SCR_EntityCatalog catalog: itemCatalogs)
+		foreach (Faction faction: factions)
+		{
+			SCR_EntityCatalog catalog = m_CatalogManager.GetFactionEntityCatalogOfType(EEntityCatalogType.ITEM, faction.GetFactionKey(), false);
+			itemCatalogs.Insert(catalog);
+		}		
+		foreach (SCR_EntityCatalog catalog: itemCatalogs)
 		{
 			for (int i = 0; i < itemSupply.Count(); i++)
 			{
