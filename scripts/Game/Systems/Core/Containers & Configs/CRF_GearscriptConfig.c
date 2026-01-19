@@ -29,13 +29,13 @@ class CRF_GearScriptContainer
 	//------------------------------------------------------------------------------------------------
 	// Vars considered "advanced" and not set by plugin
 	
-	[Attribute("{E6555DA2F31B0EC0}Configs/Gearscripts/CRF_Global_SightArsenal_Regular.conf", UIWidgets.ResourceNamePicker, desc: "Gearscript applied to all entities on this faction", "conf class=CRF_SightArsenalConfig")]
+	[Attribute("{E6555DA2F31B0EC0}Configs/Gearscripts/Additional Configs/CRF_Global_SightArsenal_Regular.conf", UIWidgets.ResourceNamePicker, desc: "Gearscript applied to all entities on this faction", "conf class=CRF_SightArsenalConfig")]
 	ResourceName m_rSightArsenal;
 	
-	[Attribute("{9D8E5FA08331042D}Configs/Gearscripts/CRF_Global_SightArsenal_Magnified.conf", UIWidgets.ResourceNamePicker, desc: "Gearscript applied to all entities on this faction", "conf class=CRF_SightArsenalConfig")]
+	[Attribute("{9D8E5FA08331042D}Configs/Gearscripts/Additional Configs/CRF_Global_SightArsenal_Magnified.conf", UIWidgets.ResourceNamePicker, desc: "Gearscript applied to all entities on this faction", "conf class=CRF_SightArsenalConfig")]
 	ResourceName m_rMagnifiedSightArsenal;
 	
-	[Attribute("{2E2626C733070162}Configs/Gearscripts/CRF_Global_VehicleGearscriptValues.conf", UIWidgets.ResourceNamePicker, desc: "Gearscript applied to all vehicles on this faction", "conf class=CRF_VehicleGearscriptConfig")]
+	[Attribute("{2E2626C733070162}Configs/Gearscripts/Additional Configs/CRF_Global_VehicleGearscriptValues.conf", UIWidgets.ResourceNamePicker, desc: "Gearscript applied to all vehicles on this faction", "conf class=CRF_VehicleGearscriptConfig")]
 	ResourceName m_rVehicleGearscriptValues;
 	
 	[Attribute("", desc: "Loadout values applied to all vehicles in this faction", "conf class=CRF_VehicleGearScriptLoadout")]
@@ -115,7 +115,7 @@ class CRF_GearScriptConfig
 	[Attribute(uiwidget: "resourcePickerThumbnail", params: "edds", category: "CRF Gearscript - Faction Settings")]
 	ResourceName m_FactionIcon;
 	
-	[Attribute("{11CAD6C8909CE567}Configs/Identities/CRF_CharacterIdentity_European.conf", UIWidgets.ResourceNamePicker, desc: "Gearscript Faction Identity", "conf class=CRF_CharacterIdentity", category: "CRF Gearscript - Faction Settings")]
+	[Attribute("{11CAD6C8909CE567}Configs/_Identities/CRF_CharacterIdentity_European.conf", UIWidgets.ResourceNamePicker, desc: "Gearscript Faction Identity", "conf class=CRF_CharacterIdentity", category: "CRF Gearscript - Faction Settings")]
 	ResourceName m_FactionIdentity;
 	
 	[Attribute(category: "CRF Gearscript - Faction Weapons")]
@@ -189,13 +189,17 @@ class CRF_GearScriptRolesConfig
 	[Attribute()]
 	ref array<ref CRF_RoleConfig> m_RoleConfigs;
 	
+	protected ref map<CRF_EGearRole, CRF_RoleConfig> m_RoleConfigsMap = new map<CRF_EGearRole, CRF_RoleConfig>;
+	
 	CRF_RoleConfig FindRoleConfig(CRF_EGearRole role)
 	{
+		return m_RoleConfigsMap.Get(role);
+	}
+	
+	void CRF_GearScriptRolesConfig()
+	{
 		foreach(CRF_RoleConfig roleConfig : m_RoleConfigs)
-			if (roleConfig.m_Role == role)
-				return roleConfig;
-
-		return new CRF_RoleConfig;
+			m_RoleConfigsMap.Set(roleConfig.m_Role, roleConfig);	
 	}
 }
 
@@ -219,16 +223,7 @@ class CRF_RoleConfig
 	CRF_ESlotType m_SlottingType;
 
 	[Attribute(uiwidget: "resourcePickerSimple", params: "et")]
-	ResourceName m_BluforVariant;
-	
-	[Attribute(uiwidget: "resourcePickerSimple", params: "et")]
-	ResourceName m_OpforVariant;
-	
-	[Attribute(uiwidget: "resourcePickerSimple", params: "et")]
-	ResourceName m_IndforVariant;
-	
-	[Attribute(uiwidget: "resourcePickerSimple", params: "et")]
-	ResourceName m_CivVariant;
+	ResourceName m_RoleResource;
 	
 	[Attribute("", UIWidgets.SearchComboBox, enums: ParamEnumArray.FromEnum(CRF_EGearscriptWeapons))]
 	ref array<CRF_EGearscriptWeapons> m_aWeapons;
