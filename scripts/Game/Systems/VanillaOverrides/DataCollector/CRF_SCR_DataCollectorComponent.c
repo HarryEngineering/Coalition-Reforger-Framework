@@ -187,24 +187,24 @@ modded class SCR_DataCollectorComponent
 	
 	override void OnPlayerDisconnected(int playerId, KickCauseCode cause, int timeout)
 	{
-		// Get player data without creating new instance
+		// Get player data - let it be created if it doesn't exist (vanilla behavior)
 		SCR_PlayerData playerDisconnectedData = GetPlayerData(playerId, false);
 		
-		// Safety check: Player might disconnect before data was initialized
-		if (!playerDisconnectedData)
-			return;
-		
-		// Safety check: Player might disconnect before profile was loaded from backend
-		if (!playerDisconnectedData.IsDataReady())
-			return;
-		
-		// Notify all modules about disconnect
+		// Notify all modules about disconnect first
 		foreach (SCR_DataCollectorModule module : m_aModules)
 		{
 			module.OnPlayerDisconnected(playerId);
 		}
-
-		// Save player profile to backend
+		
+		// Safety check: Player might disconnect before data was initialized
+		// In vanilla, this can't happen because GetPlayerData creates it, but we use false to match their pattern
+		if (!playerDisconnectedData)
+			return;
+		
+		// Calculate session duration before storing
+		playerDisconnectedData.CalculateSessionDuration();
+		
+		// Save player profile to backend IMMEDIATELY after session duration calculated
 		playerDisconnectedData.StoreProfile();
 
 		// ADD STATS TO FACTION
@@ -227,7 +227,17 @@ modded class SCR_DataCollectorComponent
 		// DONE ADDING STATS TO THE FACTION
 		//We cannot remove this instance of data from the player collector because the event has not been sent yet to the Database for tracking purposes
 		//m_mPlayerData.Remove(playerId);
-
-		//As an alternative, in GetPlayerDataStats we put this instance to be removed after its used in C++
+	}
+	
+	//------------------------------------------------------------------------------------------------
+	// When game shuts down, store the profile of every player who hasn't disconnected yet
+	override void OnGameEnd()
+	{	
+		for (int i = m_mPlayerData.Count() - 1; i >= 0; i--)
+		{
+			SCR_PlayerData playerData = GetPlayerData(m_mPlayerData.GetKey(i), false);
+			if (playerData)
+				playerData.StoreProfile();
+		}
 	}
 }
