@@ -213,7 +213,7 @@ class CRF_SpectatorMenu: ChimeraMenuBase
 		// If already following someone, restart the rails with the new mode
 		if (m_eSpecEntity && m_bFrameEventRegistered)
 		{
-			CRF_CameraManager camManager = CRF_CameraManager.GetInstance();
+			CRF_PlayerCameraManager camManager = CRF_PlayerCameraManager.GetInstance();
 			camManager.SetCameraOnRailsEntity(m_eSpecEntity, m_bTPPMode);
 		}
 	}
@@ -261,15 +261,76 @@ class CRF_SpectatorMenu: ChimeraMenuBase
 		
 		// Register create channel button click handler
 		SCR_ButtonTextComponent.Cast(ButtonWidget.Cast(m_wRoot.FindAnyWidget("CreateChannel")).FindHandler(SCR_ButtonTextComponent)).m_OnClicked.Insert(CreateChannel);
+		
+		// Apply faction restrictions if enabled
+		ApplyFactionRestrictions();
+	}
+	
+	/**
+	 * Applies faction-based spectator restrictions to UI elements
+	 * Disables faction buttons that the spectator is not allowed to view
+	 */
+	protected void ApplyFactionRestrictions()
+	{
+		// Only apply restrictions if the setting is enabled
+		if (!m_Gamemode || !m_Gamemode.m_bHideOtherSpectatorFactions)
+			return;
+		
+		int localPlayerId = SCR_PlayerController.GetLocalPlayerId();
+		Faction localPlayerFaction = CRF_SlottingManager.GetInstance().GetPlayerSlotFaction(localPlayerId);
+		
+		// If player has no faction, don't restrict anything
+		if (!localPlayerFaction)
+			return;
+		
+		string localFactionKey = localPlayerFaction.GetFactionKey();
+		
+		// Disable faction buttons that don't match the player's faction
+		if (localFactionKey != "BLUFOR" && m_wBluforButton)
+			m_wBluforButton.SetEnabled(false);
+		
+		if (localFactionKey != "OPFOR" && m_wOpforButton)
+			m_wOpforButton.SetEnabled(false);
+		
+		if (localFactionKey != "INDFOR" && m_wIndforButton)
+			m_wIndforButton.SetEnabled(false);
+		
+		if (localFactionKey != "CIV" && m_wCivButton)
+			m_wCivButton.SetEnabled(false);
 	}
 	
 	/**
 	 * Select default faction based on availability
+	 * When faction restrictions are enabled, automatically selects the player's own faction
 	 */
 	protected void SelectDefaultFaction()
 	{
 		CRF_SlottingManager slottingManager = CRF_SlottingManager.GetInstance();
 		
+		// If faction restrictions are enabled, select the player's own faction
+		if (m_Gamemode && m_Gamemode.m_bHideOtherSpectatorFactions)
+		{
+			int localPlayerId = SCR_PlayerController.GetLocalPlayerId();
+			Faction localPlayerFaction = slottingManager.GetPlayerSlotFaction(localPlayerId);
+			
+			if (localPlayerFaction)
+			{
+				string localFactionKey = localPlayerFaction.GetFactionKey();
+				
+				if (localFactionKey == "BLUFOR" && slottingManager.IsFactionValid("BLUFOR"))
+					SelectFactionBlufor();
+				else if (localFactionKey == "OPFOR" && slottingManager.IsFactionValid("OPFOR"))
+					SelectFactionOpfor();
+				else if (localFactionKey == "INDFOR" && slottingManager.IsFactionValid("INDFOR"))
+					SelectFactionIndfor();
+				else if (localFactionKey == "CIV" && slottingManager.IsFactionValid("CIV"))
+					SelectFactionCiv();
+				
+				return;
+			}
+		}
+		
+		// Default behavior: select first valid faction
 		if(slottingManager.IsFactionValid("BLUFOR"))
 			SelectFactionBlufor();
 		else if(slottingManager.IsFactionValid("OPFOR"))
@@ -293,7 +354,7 @@ class CRF_SpectatorMenu: ChimeraMenuBase
 	void UpdateCompass()
 	{
 		// Get camera yaw angle (double negation cancels — equivalent to raw [0] value)
-		float yaw = CRF_CameraManager.GetInstance().m_eCamera.GetYawPitchRoll()[0];
+		float yaw = CRF_PlayerCameraManager.GetInstance().m_eCamera.GetYawPitchRoll()[0];
 		
 		// Normalise to 0-360
 		yaw = yaw - 360 * Math.Floor(yaw / 360);
@@ -433,7 +494,7 @@ class CRF_SpectatorMenu: ChimeraMenuBase
 	 */
 	protected void UpdateSpectatorCamera(float tDelta)
 	{
-		CRF_CameraManager cameraManager = CRF_CameraManager.GetInstance();
+		CRF_PlayerCameraManager cameraManager = CRF_PlayerCameraManager.GetInstance();
 		
 		if (m_eSpecEntity)
 		{
@@ -447,7 +508,7 @@ class CRF_SpectatorMenu: ChimeraMenuBase
 				im.GetActionValue("ManualCameraMoveVertical") != 0 || 
 				im.GetActionValue("ManualCameraMoveLongitudinal") != 0 || 
 				(!m_bTPPMode && im.GetActionValue("ManualCameraRotate") != 0) || 
-				CRF_GamemodeManager.IsSpectator(m_eSpecEntity);
+				CRF_EntityHelper.IsSpectator(m_eSpecEntity);
 				
 			if (isManualControl)
 			{
@@ -488,10 +549,10 @@ class CRF_SpectatorMenu: ChimeraMenuBase
 		{
 			IEntity specEntity = SCR_PlayerController.GetLocalMainEntity();
 			
-			if (!CRF_GamemodeManager.IsSpectator(specEntity))
+			if (!CRF_EntityHelper.IsSpectator(specEntity))
 				return;
 			
-			CRF_CameraManager camManager = CRF_CameraManager.GetInstance();
+			CRF_PlayerCameraManager camManager = CRF_PlayerCameraManager.GetInstance();
 			camManager.SetCameraOnRailsEntity(m_eSpecEntity, m_bTPPMode);
 			
 			m_bFrameEventRegistered = true;
@@ -507,10 +568,10 @@ class CRF_SpectatorMenu: ChimeraMenuBase
 		{
 			IEntity specEntity = SCR_PlayerController.GetLocalMainEntity();
 			
-			if (!CRF_GamemodeManager.IsSpectator(specEntity))
+			if (!CRF_EntityHelper.IsSpectator(specEntity))
 				return;
 			
-			CRF_CameraManager camManager = CRF_CameraManager.GetInstance();
+			CRF_PlayerCameraManager camManager = CRF_PlayerCameraManager.GetInstance();
 			camManager.SetCameraOnRailsEntity(null);
 			
 			m_bFrameEventRegistered = false;
@@ -624,7 +685,7 @@ class CRF_SpectatorMenu: ChimeraMenuBase
 			{
 				IEntity playerEntity = playermanager.GetPlayerControlledEntity(playerId);
 				
-				if (playerEntity && CRF_GamemodeManager.IsSpectator(playerEntity) && playerEntity != localMainEnt)
+				if (playerEntity && CRF_EntityHelper.IsSpectator(playerEntity) && playerEntity != localMainEnt)
 				{
 					RplId playerRplId = RplComponent.Cast(playerEntity.FindComponent(RplComponent)).Id();
 					comparisonRplIds.Insert(playerRplId);
@@ -692,6 +753,36 @@ class CRF_SpectatorMenu: ChimeraMenuBase
 	}
 	
 	/**
+	 * Checks if an entity's icon should be shown based on faction restrictions
+	 * @param entity - The entity to check
+	 * @return true if the icon should be shown, false otherwise
+	 */
+	protected bool ShouldShowEntityIcon(IEntity entity)
+	{
+		if (!entity)
+			return false;
+		
+		// Get the local spectator's faction
+		int localPlayerId = SCR_PlayerController.GetLocalPlayerId();
+		Faction localPlayerFaction = CRF_SlottingManager.GetInstance().GetPlayerSlotFaction(localPlayerId);
+		
+		if (!localPlayerFaction)
+			return true; // If local player has no faction, show all icons
+		
+		// Get the entity's faction
+		FactionAffiliationComponent factionComp = FactionAffiliationComponent.Cast(entity.FindComponent(FactionAffiliationComponent));
+		if (!factionComp)
+			return true; // If entity has no faction component, show it
+		
+		Faction entityFaction = factionComp.GetAffiliatedFaction();
+		if (!entityFaction)
+			return true; // If entity has no faction, show it
+		
+		// Only show entities from the same faction
+		return (entityFaction == localPlayerFaction);
+	}
+	
+	/**
 	 * Set the icon for the provided entity
 	 * @param entity - Entity to pass along to the icon
 	 * @param entityId - EntityId to use to insert into the icon arrays
@@ -701,6 +792,13 @@ class CRF_SpectatorMenu: ChimeraMenuBase
 		// Skip if icon already exists
 		if (m_aEntityIcons.Contains(entityId))
 			return;
+		
+		// Check faction restrictions - hide icons from other factions if enabled
+		if (m_Gamemode && m_Gamemode.m_bHideOtherSpectatorFactions)
+		{
+			if (!ShouldShowEntityIcon(entity))
+				return;
+		}
 		
 		// Create new spectator icon
 		Widget spectatorIconWidget = GetGame().GetWorkspace().CreateWidgets(
@@ -713,7 +811,7 @@ class CRF_SpectatorMenu: ChimeraMenuBase
 		);
 		
 		// If the character is alive and not a spectator, let spectators spectate them
-		if (!CRF_GamemodeManager.IsSpectator(entity))
+		if (!CRF_EntityHelper.IsSpectator(entity))
 		{
 			// Give the icon a reference to this menu so its click callbacks can call SelectSpecCursorFPP/TPP directly
 			spectatorIcon.SetSpectatorMenu(this);
@@ -791,6 +889,32 @@ class CRF_SpectatorMenu: ChimeraMenuBase
 	}
 	
 	/**
+	 * Checks if a group's icon should be shown based on faction restrictions
+	 * @param group - The group to check
+	 * @return true if the icon should be shown, false otherwise
+	 */
+	protected bool ShouldShowGroupIcon(SCR_AIGroup group)
+	{
+		if (!group)
+			return false;
+		
+		// Get the local spectator's faction
+		int localPlayerId = SCR_PlayerController.GetLocalPlayerId();
+		Faction localPlayerFaction = CRF_SlottingManager.GetInstance().GetPlayerSlotFaction(localPlayerId);
+		
+		if (!localPlayerFaction)
+			return true; // If local player has no faction, show all group icons
+		
+		// Get the group's faction
+		Faction groupFaction = group.GetFaction();
+		if (!groupFaction)
+			return true; // If group has no faction, show it
+		
+		// Only show groups from the same faction
+		return (groupFaction == localPlayerFaction);
+	}
+	
+	/**
 	 * Creates a floating NATO group icon for the specified group
 	 * @param group - The SCR_AIGroup to create an icon for
 	 * @param groupId - The group's unique ID
@@ -800,6 +924,13 @@ class CRF_SpectatorMenu: ChimeraMenuBase
 		// Skip if icon already exists for this group
 		if (m_aGroupIconIds.Contains(groupId))
 			return;
+		
+		// Check faction restrictions - hide group icons from other factions if enabled
+		if (m_Gamemode && m_Gamemode.m_bHideOtherSpectatorFactions)
+		{
+			if (!ShouldShowGroupIcon(group))
+				return;
+		}
 		
 		// Create new group icon widget
 		Widget groupIconWidget = GetGame().GetWorkspace().CreateWidgets(
@@ -946,7 +1077,7 @@ class CRF_SpectatorMenu: ChimeraMenuBase
 		}
 		
 		// Create a new channel
-		CRF_RplToAuthorityManager.GetInstance().CreateChannel(localPlayerId);
+		CRF_PlayerRplToAuthorityManager.GetInstance().CreateChannel(localPlayerId);
 		
 		// Schedule radio frequency update after channel creation
 		// Use a longer delay to allow server replication and channel assignment to complete
@@ -1121,12 +1252,12 @@ class CRF_SpectatorMenu: ChimeraMenuBase
 		{
 			// Request to join non-default channel via RPC
 			Print(string.Format("[VON] Client %1 requesting to join channel %2", localPlayerId, channelId), LogLevel.NORMAL);
-			CRF_RplToAuthorityManager.GetInstance().RequestToJoinChannel(channelId, localPlayerId);
+			CRF_PlayerRplToAuthorityManager.GetInstance().RequestToJoinChannel(channelId, localPlayerId);
 		}
 		else
 		{
 			// Join default channel directly
-			CRF_RplToAuthorityManager.GetInstance().JoinChannel(localPlayerId, channelId);
+			CRF_PlayerRplToAuthorityManager.GetInstance().JoinChannel(localPlayerId, channelId);
 		}
 		
 		if (!CVON_VONGameModeComponent.GetInstance())
@@ -1174,7 +1305,7 @@ class CRF_SpectatorMenu: ChimeraMenuBase
 			return;
 		
 		IEntity specEntity = SCR_PlayerController.GetLocalMainEntity();
-		if (!CRF_GamemodeManager.IsSpectator(specEntity))
+		if (!CRF_EntityHelper.IsSpectator(specEntity))
 			return;
 		
 		// Toggle off if already following this entity in TPP mode
@@ -1190,7 +1321,7 @@ class CRF_SpectatorMenu: ChimeraMenuBase
 		m_eSpecEntity = entity;
 		m_bFPPEntityValidityCheck = true;
 		
-		CRF_CameraManager camManager = CRF_CameraManager.GetInstance();
+		CRF_PlayerCameraManager camManager = CRF_PlayerCameraManager.GetInstance();
 		camManager.SetCameraOnRailsEntity(m_eSpecEntity, true);
 		m_bFrameEventRegistered = true;
 	}
@@ -1207,7 +1338,7 @@ class CRF_SpectatorMenu: ChimeraMenuBase
 			return;
 		
 		IEntity specEntity = SCR_PlayerController.GetLocalMainEntity();
-		if (!CRF_GamemodeManager.IsSpectator(specEntity))
+		if (!CRF_EntityHelper.IsSpectator(specEntity))
 			return;
 		
 		// Toggle off if already following this entity in FPP mode
@@ -1223,7 +1354,7 @@ class CRF_SpectatorMenu: ChimeraMenuBase
 		m_eSpecEntity = entity;
 		m_bFPPEntityValidityCheck = true;
 		
-		CRF_CameraManager camManager = CRF_CameraManager.GetInstance();
+		CRF_PlayerCameraManager camManager = CRF_PlayerCameraManager.GetInstance();
 		camManager.SetCameraOnRailsEntity(m_eSpecEntity, false);
 		m_bFrameEventRegistered = true;
 	}
@@ -1364,25 +1495,24 @@ class CRF_SpectatorMenu: ChimeraMenuBase
 		
 		// Get required managers
 		SCR_GroupsManagerComponent groupManager = SCR_GroupsManagerComponent.GetInstance();
-		CRF_GearscriptManager gearscriptManager = CRF_GearscriptManager.GetInstance();
 		
 		// Initialize slot counters
 		InitSlots();
 		
 		// Update faction UI elements
-		UpdateFactionUI("BLUFOR", gearscriptManager, m_wRoot.FindAnyWidget("BLUButton"), 
+		UpdateFactionUI("BLUFOR", m_wRoot.FindAnyWidget("BLUButton"), 
 			m_wRoot.FindAnyWidget("BLUFlag"), m_wRoot.FindAnyWidget("BLURatio"), 
 			m_iAliveBluforSlots, m_iBluforSlots);
 			
-		UpdateFactionUI("OPFOR", gearscriptManager, m_wRoot.FindAnyWidget("OPFButton"), 
+		UpdateFactionUI("OPFOR", m_wRoot.FindAnyWidget("OPFButton"), 
 			m_wRoot.FindAnyWidget("OPFFlag"), m_wRoot.FindAnyWidget("OPFRatio"), 
 			m_iAliveOpforSlots, m_iOpforSlots);
-			
-		UpdateFactionUI("INDFOR", gearscriptManager, m_wRoot.FindAnyWidget("INDButton"), 
+		
+		UpdateFactionUI("INDFOR", m_wRoot.FindAnyWidget("INDButton"), 
 			m_wRoot.FindAnyWidget("INDFlag"), m_wRoot.FindAnyWidget("INDRatio"), 
 			m_iAliveIndforSlots, m_iIndforSlots);
 			
-		UpdateFactionUI("CIV", gearscriptManager, m_wRoot.FindAnyWidget("CIVButton"), 
+		UpdateFactionUI("CIV", m_wRoot.FindAnyWidget("CIVButton"), 
 			m_wRoot.FindAnyWidget("CIVFlag"), m_wRoot.FindAnyWidget("CIVRatio"), 
 			m_iAliveCivSlots, m_iCivSlots);
 		
@@ -1494,14 +1624,13 @@ class CRF_SpectatorMenu: ChimeraMenuBase
 	/**
 	 * Helper method to update a single faction's UI elements
 	 * @param factionKey - The faction key (e.g., "BLUFOR", "OPFOR")
-	 * @param gearscriptManager - Reference to the gearscript manager
 	 * @param buttonWidget - Button widget for this faction
 	 * @param flagWidget - Flag image widget for this faction
 	 * @param ratioWidget - Text widget showing player count ratio
 	 * @param aliveCount - Number of alive players in faction
 	 * @param totalCount - Total number of players in faction
 	 */
-	protected void UpdateFactionUI(string factionKey, CRF_GearscriptManager gearscriptManager, 
+	protected void UpdateFactionUI(string factionKey, 
 		Widget buttonWidget, Widget flagWidget, Widget ratioWidget, int aliveCount, int totalCount)
 	{
 		// Skip if faction is not valid
@@ -1516,21 +1645,18 @@ class CRF_SpectatorMenu: ChimeraMenuBase
 		ResourceName iconPath;
 		
 		// Try to get icon from gearscript first
-		if (gearscriptManager)
-		{	
-			ResourceName gearScriptResource = gearscriptManager.GetGearScriptResource(factionKey);
-			if (!gearScriptResource.IsEmpty())
+		ResourceName gearScriptResource = CRF_Gamemode.GetInstance().GetGearScriptResource(factionKey);
+		if (!gearScriptResource.IsEmpty())
+		{
+			CRF_GearScriptConfig gearConfig = CRF_GearScriptConfig.Cast(
+				BaseContainerTools.CreateInstanceFromContainer(
+					BaseContainerTools.LoadContainer(gearScriptResource).GetResource().ToBaseContainer()
+				)
+			);
+			
+			if (gearConfig && !gearConfig.m_FactionIcon.IsEmpty())
 			{
-				CRF_GearScriptConfig gearConfig = CRF_GearScriptConfig.Cast(
-					BaseContainerTools.CreateInstanceFromContainer(
-						BaseContainerTools.LoadContainer(gearScriptResource).GetResource().ToBaseContainer()
-					)
-				);
-				
-				if (gearConfig && !gearConfig.m_FactionIcon.IsEmpty())
-				{
-					iconPath = gearConfig.m_FactionIcon;
-				}
+				iconPath = gearConfig.m_FactionIcon;
 			}
 		}
 		
@@ -1582,6 +1708,18 @@ class CRF_SpectatorMenu: ChimeraMenuBase
 		if (!slotData)
 			return;
 		
+		// Check if faction-based spectator restriction is enabled
+		if (m_Gamemode && m_Gamemode.m_bHideOtherSpectatorFactions)
+		{
+			int localPlayerId = SCR_PlayerController.GetLocalPlayerId();
+			Faction localPlayerFaction = CRF_SlottingManager.GetInstance().GetPlayerSlotFaction(localPlayerId);
+			Faction targetFaction = GetGame().GetFactionManager().GetFactionByKey(slotData.GetSlotFactionKey());
+			
+			// Prevent spectating players from other factions
+			if (localPlayerFaction && targetFaction && localPlayerFaction != targetFaction)
+				return;
+		}
+		
 		// Find the entity associated with the slot and set it as the spectator target
 		RplComponent rplComponent = RplComponent.Cast(Replication.FindItem(slotData.GetSlotCurrentCharacter()));
 		if (rplComponent)
@@ -1591,7 +1729,7 @@ class CRF_SpectatorMenu: ChimeraMenuBase
 		else
 		{
 			int playerId = SCR_PlayerController.GetLocalPlayerId();
-			CRF_RplToAuthorityManager.GetInstance().MoveSpecCamToSlot(selectedComponent.m_iSlotId, playerId);
+			CRF_PlayerRplToAuthorityManager.GetInstance().MoveSpecCamToSlot(selectedComponent.m_iSlotId, playerId);
 		}
 	}
 	
@@ -2193,7 +2331,7 @@ class CRF_SpectatorMenu: ChimeraMenuBase
 	void UpdateTimer()
 	{	
 		// Get current mission time
-		m_sServerWorldTime = CRF_GamemodeManager.GetInstance().GetServerWorldTime();
+		m_sServerWorldTime = CRF_GameTimerManager.GetInstance().GetServerWorldTime();
 		
 		// Skip update if in safestart, time is empty, or hasn't changed
 		if (m_sServerWorldTime == "N/A" ||

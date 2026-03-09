@@ -1,137 +1,313 @@
-/**
- * CRF_SCR_InventoryStorageManagerComponent
- *
- * Prevents players from removing uniform clothing pieces that were assigned to
- * them by the faction gearscript. Only clothing prefabs explicitly listed in
- * the player's gearscript (default clothing + any custom role clothing) are
- * locked — anything not in the gearscript can still be freely removed.
- *
- * Locking is skipped for:
- *  - The server / authority (so gearscript can still clear and reapply gear)
- *  - Spectator entities
- *  - Items whose prefab is not listed in the faction gearscript clothing arrays
- *  - During safestart (players can still adjust gear freely before the mission begins)
- */
-modded class SCR_InventoryStorageManagerComponent
+modded class SCR_InventoryStorageManagerComponent : ScriptedInventoryStorageManagerComponent
 {
 	//------------------------------------------------------------------------------------------------
-	/**
-	 * @brief Intercept clothing removal to enforce gearscript uniform locking.
-	 *
-	 * Only blocks removal when ALL of the following are true:
-	 *  1. The local client is the one performing the action (not server authority).
-	 *  2. The owner entity is the locally controlled character (not a body being looted).
-	 *  3. The owner is not a spectator.
-	 *  4. Safestart has ended.
-	 *  5. The item's prefab is listed in the faction gearscript clothing config.
-	 */
-	override bool TryRemoveItemFromStorage(IEntity item, BaseInventoryStorageComponent storage, bool updateQuickbar = false)
+	//! Intercept clothing removal to enforce gearscript uniform locking.
+	//! Only blocks removal when ALL of the following are true:
+	//!  1. The local client is the one performing the action (not server authority).
+	//!  2. The owner entity is the locally controlled character (not a body being looted).
+	//!  3. The owner is not a spectator.
+	//!  5. The item's prefab is listed in the faction gearscript clothing config.
+	//! Note: TryRemoveItemFromStorage is proto external and cannot be overridden in script.
+	//! TryRemoveItemFromInventory is the scripted entry-point that the inventory UI calls,
+	//! and it internally calls TryRemoveItemFromStorage — so this is the correct intercept point.
+	//! 
+	//! \param[in] item Item to check
+	override bool CanMoveItem(IEntity item)
 	{
-		// Authority (server) always bypasses the lock so gearscript can re-equip freely.
-		if (Replication.IsServer())
-			return super.TryRemoveItemFromStorage(item, storage, updateQuickbar);
-
-		// Only apply the lock when the owner of this manager is the locally controlled character.
-		IEntity ownerEntity = GetOwner();
-		if (!ownerEntity)
-			return super.TryRemoveItemFromStorage(item, storage, updateQuickbar);
-
-		// Skip if the owner is not the local player's controlled entity (e.g. looting a body).
-		IEntity localEntity = SCR_PlayerController.GetLocalMainEntity();
-		if (ownerEntity != localEntity)
-			return super.TryRemoveItemFromStorage(item, storage, updateQuickbar);
-
-		// Skip locking for spectator entities.
-		if (CRF_GamemodeManager.IsSpectator(ownerEntity))
-			return super.TryRemoveItemFromStorage(item, storage, updateQuickbar);
-
-		// Skip locking during safestart — players can still adjust gear then.
-		CRF_SafestartManager safestart = CRF_SafestartManager.GetInstance();
-		if (!safestart || safestart.GetSafestartStatus())
-			return super.TryRemoveItemFromStorage(item, storage, updateQuickbar);
-
+		if (CRF_Gamemode.GetInstance().m_bEnableClothesSwapping)
+			return super.CanMoveItem(item);
+		
 		// Block removal if the item is a gearscript-assigned clothing piece.
-		if (IsGearscriptClothingPiece(item, ownerEntity))
+		if (CRF_ClothingHelper.IsGearscriptClothingPiece(item))
 		{
 			Print("[CRF] Uniform lock: blocked removal of gearscript clothing " + item.GetPrefabData().GetPrefabName(), LogLevel.DEBUG);
 			return false;
 		}
 
-		return super.TryRemoveItemFromStorage(item, storage, updateQuickbar);
+		return super.CanMoveItem(item);
+	}
+	
+	//------------------------------------------------------------------------------------------------
+	//! Try to equip the item into the slot (cloth)
+	//! \param[in] pOwnerEntity
+	override void EquipCloth( IEntity pOwnerEntity )
+	{
+		if (CRF_Gamemode.GetInstance().m_bEnableClothesSwapping)
+			return super.EquipCloth(pOwnerEntity);
+		
+		// Block removal if the item is a gearscript-assigned clothing piece.
+		if (CRF_ClothingHelper.IsGearscriptClothingPiece(pOwnerEntity))
+		{
+			Print("[CRF] Uniform lock: blocked swapping of gearscript clothing " + pOwnerEntity.GetPrefabData().GetPrefabName(), LogLevel.DEBUG);
+			return;
+		}
+		
+		super.EquipCloth(pOwnerEntity);
+	}
+	
+	//------------------------------------------------------------------------------------------------
+	//! Callback triggered when an item is added to storage
+	//! This is executed locally after the server completes an Insert/Move operation
+	//! Contains special handling for radio equipment based on faction
+	//! 
+	//! \param[in] storageOwner The storage component that owns the item
+	//! \param[in] item The item entity that was added
+	override protected void OnItemAdded(BaseInventoryStorageComponent storageOwner, IEntity item)
+	{		
+		// Call the parent implementation first
+		super.OnItemAdded(storageOwner, item);
+		
+		// If no gamemode instance exists, exit
+		if (!CRF_Gamemode.GetInstance())
+			return;
+		
+		// Skip radio validation if espionage is allowed and not in client mode
+		if (CRF_Gamemode.GetInstance() && RplSession.Mode() != RplMode.Client && CRF_Gamemode.GetInstance().m_bMissionAllowsEspionage)
+			return;
+
+		// Check if the item is a radio
+		BaseRadioComponent radioComp = BaseRadioComponent.Cast(item.FindComponent(BaseRadioComponent));
+		if (!radioComp)
+			return;
+		
+		// Get the player entity that owns this storage
+		IEntity player = storageOwner.GetOwner().GetRootParent().GetRootParent().GetRootParent().GetRootParent();
+		if (!player)
+			return;
+		
+		// Get the faction affiliation component from the player
+		FactionAffiliationComponent facComp = FactionAffiliationComponent.Cast(player.FindComponent(FactionAffiliationComponent));
+		if (!facComp)
+			return;
+		
+		if (!CVON_VONGameModeComponent.GetInstance())
+		{
+			// Delete radio if its encryption key doesn't match the player's faction
+			switch(true)
+			{
+				// BLUFOR players must use "chickenNuggets" encryption
+				case(facComp.GetAffiliatedFactionKey() == "BLUFOR" && radioComp.GetEncryptionKey() != "chickenNuggets"): 
+				{
+					SCR_EntityHelper.DeleteEntityAndChildren(item); 
+					break;
+				}
+				
+				// OPFOR players must use "coldBorscht" encryption
+				case(facComp.GetAffiliatedFactionKey() == "OPFOR" && radioComp.GetEncryptionKey() != "coldBorscht"):  
+				{
+					SCR_EntityHelper.DeleteEntityAndChildren(item); 
+					break;
+				}
+				
+				// INDFOR players must use "candleSauce" encryption
+				case(facComp.GetAffiliatedFactionKey() == "INDFOR" && radioComp.GetEncryptionKey() != "candleSauce"):  
+				{
+					SCR_EntityHelper.DeleteEntityAndChildren(item); 
+					break;
+				}
+			};
+		}
+		
+	}
+	
+	//------------------------------------------------------------------------------------------------
+	//! Attempts to insert an item into storage with various fallback options
+	//! Custom implementation for the framework with additional storage handling
+	//! 
+	//! \param[in] pItem The item to insert
+	//! \param[in] pStorageTo Target storage (if null, best storage will be determined)
+	//! \param[in] pStorageFrom Source storage (null if from ground)
+	//! \param[in] cb Callback for operation completion
+	//! \param[in] playSound Whether to play sound effects
+	void InsertItemCRF(IEntity pItem, BaseInventoryStorageComponent pStorageTo = null, BaseInventoryStorageComponent pStorageFrom = null, SCR_InvCallBack cb = null, bool playSound = true)
+	{
+		// Early exit checks
+		if (!pItem || !IsAnimationReady() || IsInventoryLocked())
+			return;
+		
+		SetInventoryLocked(true);
+
+		bool canInsert = true;
+		
+		// Case 1: No storage selected - find the best fitting storage
+		if (!pStorageTo)
+		{
+			string soundEvent = SCR_SoundEvent.SOUND_EQUIP;
+			
+			// Try inserting into weapon proxy storage
+			if (!TryInsertItem(pItem, EStoragePurpose.PURPOSE_WEAPON_PROXY, cb))
+			{
+				// Try inserting into equipment attachment storage
+				if (!TryInsertItem(pItem, EStoragePurpose.PURPOSE_EQUIPMENT_ATTACHMENT, cb))
+				{
+					// Try inserting into deposit storage
+					if (!TryInsertItem(pItem, EStoragePurpose.PURPOSE_DEPOSIT, cb))
+					{
+						// Try finding any storage that fits the item
+						if (!TryMoveItemToStorage(pItem, FindStorageForItem(pItem, EStoragePurpose.PURPOSE_ANY), -1, cb))
+						{
+							// Last resort: try moving to the main storage
+							canInsert = TryMoveItemToStorage(pItem, m_Storage, -1, cb);
+						}
+						else
+						{
+							// Item was picked up from vicinity
+							soundEvent = SCR_SoundEvent.SOUND_PICK_UP;
+						}
+						
+						if(playSound)
+							SCR_UISoundEntity.SoundEvent(SCR_SoundEvent.SOUND_INV_HOTKEY_CONFIRM);
+					}
+					else
+					{
+						soundEvent = SCR_SoundEvent.SOUND_PICK_UP;
+					}
+				}
+			}
+			
+			// Play appropriate sound effect if insertion was successful
+			if (canInsert && playSound)
+				PlayItemSound(pItem, soundEvent);
+		}
+		// Case 2: Specific storage target provided
+		else
+		{
+			// Special case for main storage: try to replace an item
+			if (pStorageTo == m_Storage)
+			{
+				canInsert = TryReplaceItem(pStorageTo, pItem, 0, cb);
+				if (canInsert)
+				{
+					SetInventoryLocked(false);
+					return;
+				}
+			}
+			
+			// Find a valid storage to insert item in - first try equipment attachment
+			BaseInventoryStorageComponent validStorage = FindStorageForInsert(pItem, pStorageTo, EStoragePurpose.PURPOSE_EQUIPMENT_ATTACHMENT);
+			
+			// If not found, try any purpose
+			if (!validStorage)
+			{
+				validStorage = FindStorageForInsert(pItem, pStorageTo, EStoragePurpose.PURPOSE_ANY);
+			}
+			
+			// Use the valid storage if found
+			if (validStorage)
+			{
+				pStorageTo = validStorage;
+			}
+			// Otherwise check linked storages
+			else 
+			{
+				// Try to find valid storage in linked storages
+				SCR_UniversalInventoryStorageComponent universalStorage = SCR_UniversalInventoryStorageComponent.Cast(pStorageTo);
+				if (universalStorage)
+				{
+					array<BaseInventoryStorageComponent> linkedStorages = {};
+					universalStorage.GetLinkedStorages(linkedStorages);
+					
+					// Check each linked storage
+					foreach(BaseInventoryStorageComponent linkedStorage : linkedStorages)
+					{
+						// Use first valid linked storage found
+						if (FindStorageForInsert(pItem, linkedStorage, EStoragePurpose.PURPOSE_ANY))
+						{
+							pStorageTo = linkedStorage;
+							break;
+						}
+					}
+				}
+			}
+
+			// MODDED SECTION: Special handling for cloth components
+			int targetSlot = -1;
+			BaseInventoryStorageComponent originalStorageTo = pStorageTo;
+			
+			// Check if the item is a clothing component
+			BaseLoadoutClothComponent clothComponent = BaseLoadoutClothComponent.Cast(pItem.FindComponent(BaseLoadoutClothComponent));
+			if (clothComponent)
+			{
+				// If it has an area type, try to find a cloth node storage
+				if (clothComponent.GetAreaType())
+				{
+					BaseInventoryStorageComponent clothNodeStorage = BaseInventoryStorageComponent.Cast(pStorageTo.FindComponent(RHS_ClothNodeStorageComponent));
+					if (clothNodeStorage)
+					{
+						pStorageTo = clothNodeStorage;
+					}
+				}
+			}
+
+			// If we're using a cloth node storage, find the appropriate slot
+			if (RHS_ClothNodeStorageComponent.Cast(pStorageTo))
+			{
+				RHS_ClothNodeStorageComponent clothNodeStorage = RHS_ClothNodeStorageComponent.Cast(pStorageTo);
+				InventoryStorageSlot targetInventoryStorageSlot = clothNodeStorage.GetEmptySlotForItem(pItem);
+				
+				if (targetInventoryStorageSlot)
+				{
+					targetSlot = targetInventoryStorageSlot.GetID();
+				}
+			}
+
+			// Fallback to original storage if no valid slot found
+			if (targetSlot < 0)
+			{
+				pStorageTo = originalStorageTo;
+			}
+
+			// Perform the actual item insertion
+			if (!pStorageFrom)
+			{
+				// Moving from ground to storage
+				canInsert = TryInsertItemInStorage(pItem, pStorageTo, targetSlot, cb);
+			}
+			else
+			{
+				// Moving between storages
+				canInsert = TryMoveItemToStorage(pItem, pStorageTo, targetSlot, cb);
+			}
+			// END OF MODDED SECTION
+		}
+
+		// Handle sound effects based on insertion success
+		if (!canInsert)
+		{
+			if(playSound)
+				SCR_UISoundEntity.SoundEvent(SCR_SoundEvent.SOUND_INV_DROP_ERROR);
+		}
+		else
+		{
+			if(playSound)
+				SCR_UISoundEntity.SoundEvent(SCR_SoundEvent.SOUND_INV_CONTAINER_DIFR_DROP);
+		}
+
+		// Play the pickup animation if successful and item was taken from ground
+		if (m_CharacterController && canInsert && !pStorageFrom && playSound)
+		{
+			m_CharacterController.TryPlayItemGesture(EItemGesture.EItemGesturePickUp);
+		}
+
+		SetInventoryLocked(false);
 	}
 
 	//------------------------------------------------------------------------------------------------
-	/**
-	 * @brief Returns true if the item's prefab is listed as a clothing piece in the
-	 *        faction gearscript assigned to the local player's faction and role.
-	 *
-	 * Checks both m_DefaultClothing (faction-wide) and m_RolesToSetCustomSettings
-	 * (role-specific overrides) so custom role uniforms are also covered.
-	 *
-	 * @param item      The item the player is trying to remove.
-	 * @param character The character entity that owns this inventory.
-	 * @return True if removal should be blocked.
-	 */
-	protected bool IsGearscriptClothingPiece(IEntity item, IEntity character)
+	//For the GunGame Gamemode to prevent players from picking up weapons
+	override void EquipItem(EquipedWeaponStorageComponent weaponStorage, IEntity weapon)
 	{
-		if (!item || !character)
-			return false;
+		if (GetGame().GetGameMode().FindComponent(CRF_GunGame))
+			return;
+		
+		super.EquipItem(weaponStorage, weapon);
+	}
 
-		// Resolve the gearscript manager and the local player's faction.
-		CRF_GearscriptManager gearscriptManager = CRF_GearscriptManager.GetInstance();
-		if (!gearscriptManager)
-			return false;
-
-		int localPlayerId = SCR_PlayerController.GetLocalPlayerId();
-		Faction playerFaction = SCR_FactionManager.SGetPlayerFaction(localPlayerId);
-		if (!playerFaction)
-			return false;
-
-		// Load the gearscript config for this faction.
-		ResourceName gearScriptResource = gearscriptManager.GetGearScriptResource(playerFaction.GetFactionKey());
-		if (gearScriptResource.IsEmpty())
-			return false;
-
-		CRF_GearScriptConfig gearConfig = CRF_GearScriptConfig.Cast(
-			BaseContainerTools.CreateInstanceFromContainer(
-				BaseContainerTools.LoadContainer(gearScriptResource).GetResource().ToBaseContainer()));
-		if (!gearConfig)
-			return false;
-
-		ResourceName itemPrefab = item.GetPrefabData().GetPrefabName();
-
-		// --- Check default (faction-wide) clothing ---
-		foreach (CRF_Clothing clothing : gearConfig.m_DefaultClothing)
-		{
-			if (clothing.m_ClothingPrefabs.Contains(itemPrefab))
-				return true;
-		}
-
-		// --- Check custom role clothing ---
-		// Determine the local player's role directly from their slot data.
-		CRF_SlottingManager slottingManager = CRF_SlottingManager.GetInstance();
-		if (!slottingManager)
-			return false;
-
-		CRF_SlotDataContainer slotData = slottingManager.GetPlayerSlotData(localPlayerId);
-		if (!slotData)
-			return false;
-
-		// m_SlotRole is directly stored on the container — no resource round-trip needed.
-		CRF_EGearRole playerRole = slotData.m_SlotRole;
-
-		foreach (CRF_Role_Custom_Gear customGear : gearConfig.m_RolesToSetCustomSettings)
-		{
-			if (customGear.m_Role != playerRole)
-				continue;
-
-			foreach (CRF_Clothing clothing : customGear.m_Clothing)
-			{
-				if (clothing.m_ClothingPrefabs.Contains(itemPrefab))
-					return true;
-			}
-		}
-
-		return false;
+	//------------------------------------------------------------------------------------------------
+	override void InsertItem( IEntity pItem, BaseInventoryStorageComponent pStorageTo = null, BaseInventoryStorageComponent pStorageFrom = null, SCR_InvCallBack cb = null  )
+	{
+		if (GetGame().GetGameMode().FindComponent(CRF_GunGame))
+			return;
+		
+		super.InsertItem(pItem, pStorageTo, pStorageFrom, cb);
 	}
 }
