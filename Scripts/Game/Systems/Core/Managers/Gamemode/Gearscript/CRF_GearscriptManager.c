@@ -71,7 +71,19 @@ class CRF_GearscriptManager : ScriptComponent
 
 		if (!inventory || !inventoryManager)
 		{
-			Print(string.Format("CRF GEAR SCRIPT ERROR: %1 DOESN'T HAVE REQUIRED COMPONENTS!", entity), LogLevel.ERROR);
+			string errorMsg = string.Format("Entity %1 is missing required inventory components (SCR_CharacterInventoryStorageComponent or SCR_InventoryStorageManagerComponent)", entity);
+			
+			// Use MissionValidatorManager in Workbench, fallback to Print in game
+			#ifdef WORKBENCH
+			CRF_MissionValidatorManager validator = CRF_MissionValidatorManager.GetInstance();
+			if (validator)
+				validator.AddCriticalError("[GEARSCRIPT] " + errorMsg);
+			else
+				Print("[CRF GEARSCRIPT ERROR] " + errorMsg, LogLevel.ERROR);
+			#else
+			Print("[CRF GEARSCRIPT ERROR] " + errorMsg, LogLevel.ERROR);
+			#endif
+			
 			return;
 		}
 
@@ -150,7 +162,7 @@ class CRF_GearscriptManager : ScriptComponent
 		SoundIdentity sndIdentity = identityComp.GetIdentity().GetSoundIdentity();
 		if (!visIdentity || !sndIdentity)
 			return;
-		
+			
 		CRF_CharacterIdentity gsCharIdentity = LoadIdentityConfig(gearConfig.m_FactionIdentity);
 		
 		if (gsCharIdentity)
@@ -159,10 +171,8 @@ class CRF_GearscriptManager : ScriptComponent
 			CRF_Character_Sound_Identity gsSndIdentity;
 			
 			if (!gsCharIdentity.m_VisualIdentityArray.IsEmpty())
-				gsVisIdentity = gsCharIdentity.m_VisualIdentityArray.GetRandomElement();
-			
-			if (!gsCharIdentity.m_SoundIdentityArray.IsEmpty())
-				gsSndIdentity = gsCharIdentity.m_SoundIdentityArray.GetRandomElement();
+				gsVisIdentity = gsCharIdentity.m_VisualIdentityArray.GetRandomElement();			if (!gsCharIdentity.m_SoundIdentityArray.IsEmpty())
+					gsSndIdentity = gsCharIdentity.m_SoundIdentityArray.GetRandomElement();
 			
 			if (gsVisIdentity)
 			{
