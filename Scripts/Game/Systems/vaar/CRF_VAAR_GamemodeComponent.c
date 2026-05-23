@@ -82,6 +82,11 @@ class CRF_VAAR_GamemodeComponent: SCR_BaseGameModeComponent
         return m_sInstance;
     }
 	
+	string GetLogFilePath()
+	{
+		return m_sFilePath;
+	}
+	
 	// Setup frame json file for recording
 	//------------------------------------------------------------------------------------
 	protected void InitilizeAAR()
@@ -97,7 +102,7 @@ class CRF_VAAR_GamemodeComponent: SCR_BaseGameModeComponent
 		m_sMissionName = string.Format("%1_%2", GetGame().GetMissionName(), System.GetUnixTime());
 		
 		// Create AAR File
-		m_sFilePath = string.Format("$profile:AAR_Log_%1.json", m_sMissionName);
+		m_sFilePath = string.Format("$profile:vaar/AAR_Log_%1.json", m_sMissionName);
 		
 		// Write Mission Details to file
 		m_AARFile = FileIO.OpenFile(m_sFilePath, FileMode.APPEND);
@@ -185,7 +190,7 @@ class CRF_VAAR_GamemodeComponent: SCR_BaseGameModeComponent
 			string vehicleName = GetFriendlyName(vehicle);
 			RplId vehicleID = Replication.FindId(vehicle);
 			vector vehiclePos = vehicle.GetOrigin();
-			vector vehicleYaw = vehicle.GetAngles();
+			vector vehicleYaw = vehicle.GetYawPitchRoll();
 			int vehicleType = GetVehicleType(vehicle);
 			int vehicleFaction = GetFaction(vehicle);
 			
@@ -402,6 +407,10 @@ class CRF_VAAR_GamemodeComponent: SCR_BaseGameModeComponent
 		// Collect some info
 		IEntity killerEntity = instigatorContextData.GetKillerEntity();
 		IEntity targetEntity = instigatorContextData.GetVictimEntity();
+		
+		// Skip self-kills
+		if (killerEntity && targetEntity && killerEntity == targetEntity)
+			return;
 		
 		string killerName = GetCharacterName(killerEntity);
 		string targetName = GetCharacterName(targetEntity);
