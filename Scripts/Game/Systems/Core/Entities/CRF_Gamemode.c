@@ -225,13 +225,6 @@ class CRF_Gamemode : SCR_BaseGameMode
 	}
 
 	//------------------------------------------------------------------------------------------------
-	//! Called by the engine on all machines when the session/world is being torn down.
-	//! Explicitly overridden here to ensure the full vanilla OnGameEnd() chain fires in CRF:
-	//!   SCR_BaseGameMode.OnGameEnd() → m_OnGameEnd invoker + comp.OnGameEnd() for every
-	//!   attached SCR_BaseGameModeComponent (including SCR_DataCollectorComponent which
-	//!   performs best-effort profile saves for any players still in its tracking map).
-	//! NOTE: By this point all connected players will have already been saved individually
-	//!       via OnPlayerDisconnected() → StoreProfile(), so these are safety-net saves only.
 	override void OnGameEnd()
 	{
 		super.OnGameEnd();
@@ -326,41 +319,46 @@ class CRF_Gamemode : SCR_BaseGameMode
 				}
 				
 				case CRF_EGamemodeState.AAR: {
-					SCR_DataCollectorComponent dataCollector = GetGame().GetDataCollector();
-					dataCollector.OnGameModeEnd(GetEndGameData());
+					SetGameState(SCR_EGameModeState.POSTGAME);
 
+					SCR_DataCollectorComponent dataCollector = GetGame().GetDataCollector();
 					array<int> players = {};
 					GetGame().GetPlayerManager().GetAllPlayers(players);
-
 					foreach (int player : players)
 					{
 						// Skip disconnected players
 						if (!GetGame().GetPlayerManager().IsPlayerConnected(player))
 							continue;
-
+	
 						// Process player statistics data
 						ProcessStats(dataCollector, player);
 					}
 
-					CRF_RplBroadcastManager.GetInstance().BroadcastOutro();
-
-
-
-				// Clean up any pending late-data callbacks
-				foreach (SCR_DataCollectorCommunicationComponent pendingComp : m_aPendingDataComponents)
-				{
-					if (pendingComp)
-						pendingComp.GetOnDataReceived().Remove(OnDataReceived);
-				}
-				m_aPendingDataComponents.Clear();
+					// Clean up any pending late-data callbacks
+					foreach (SCR_DataCollectorCommunicationComponent pendingComp : m_aPendingDataComponents)
+					{
+						if (pendingComp)
+							pendingComp.GetOnDataReceived().Remove(OnDataReceived);
+					}
+					m_aPendingDataComponents.Clear();
 
 					// Close the VAAR recording
 					CRF_VAAR_GamemodeComponent vaarComponent = CRF_VAAR_GamemodeComponent.GetInstance();
 					if (vaarComponent)
 						vaarComponent.OnGameModeEnd(GetEndGameData());
+
+					// Open the outro screen on all clients, passing winning faction so clients can display it
+					CRF_RplBroadcastManager rplBroadcastManager = CRF_RplBroadcastManager.GetInstance();
+					if (rplBroadcastManager)
+					{
+						string winningFaction = "";
+						CRF_LoggingManager loggingManager = CRF_LoggingManager.GetInstance();
+						if (loggingManager)
+							winningFaction = loggingManager.GetWinningFaction();
+						rplBroadcastManager.BroadcastOutro(winningFaction);
+					}
 					break;
 				}
-				
 			}	
 		}
 		
@@ -429,7 +427,7 @@ class CRF_Gamemode : SCR_BaseGameMode
 		// numeric player ID but the GUID (BI account identity) remains the same.
 		if (IsMaster() && m_SlottingManager)
 		{
-			string reconnectGuid = GetGame().GetBackendApi().GetPlayerIdentityId(iPlayerID);
+			string reconnectGuid = SCR_PlayerIdentityUtils.GetPlayerIdentityId(iPlayerID);
 			int savedSlotId;
 			if (!reconnectGuid.IsEmpty() && m_mReconnectSlotByGuid.Find(reconnectGuid, savedSlotId))
 			{
@@ -441,7 +439,7 @@ class CRF_Gamemode : SCR_BaseGameMode
 		QueuePlayerInitialization(iPlayerID);
 
 		// Get player's BI account GUID for privilege checks
-		string playerGUID = GetGame().GetBackendApi().GetPlayerIdentityId(iPlayerID);
+		string playerGUID = SCR_PlayerIdentityUtils.GetPlayerIdentityId(iPlayerID);
 		
 		// Check if player is the mission designer and grant admin chat
 		SCR_MissionHeader missionHeader = SCR_MissionHeader.Cast(GetGame().GetMissionHeader());
@@ -477,7 +475,7 @@ class CRF_Gamemode : SCR_BaseGameMode
 		// slot on reconnect even if their numeric player ID changes (dedicated-server behaviour).
 		if (IsMaster() && m_SlottingManager)
 		{
-			string disconnectGuid = GetGame().GetBackendApi().GetPlayerIdentityId(playerId);
+			string disconnectGuid = SCR_PlayerIdentityUtils.GetPlayerIdentityId(playerId);
 			if (!disconnectGuid.IsEmpty())
 			{
 				int disconnectSlotId = m_SlottingManager.GetPlayerSlotID(playerId);
