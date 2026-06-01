@@ -342,11 +342,6 @@ class CRF_Gamemode : SCR_BaseGameMode
 					}
 					m_aPendingDataComponents.Clear();
 
-					// Close the VAAR recording
-					CRF_VAAR_GamemodeComponent vaarComponent = CRF_VAAR_GamemodeComponent.GetInstance();
-					if (vaarComponent)
-						vaarComponent.OnGameModeEnd(GetEndGameData());
-
 					// Open the outro screen on all clients, passing winning faction so clients can display it
 					CRF_RplBroadcastManager rplBroadcastManager = CRF_RplBroadcastManager.GetInstance();
 					if (rplBroadcastManager)
@@ -652,6 +647,15 @@ class CRF_Gamemode : SCR_BaseGameMode
 //	 GETTERS/UPDATERS
 //=============================================================================================================================================================================================================================================================================================================================================================
 	
+	//------------------------------------------------------------------------------------------------
+	// Disable the vanilla 30-second auto-restart countdown on game mode end.
+	// Returning -1 makes SCR_BaseGameMode.OnGameModeEnd skip RestartSession entirely
+	// (it falls through to TryShutdownServer which is a no-op without -autoshutdown).
+	override float GetAutoReloadDelay()
+	{
+		return -1;
+	}
+
 	//------------------------------------------------------------------------------------------------
 	vector GetGenericSpawn()
 	{
