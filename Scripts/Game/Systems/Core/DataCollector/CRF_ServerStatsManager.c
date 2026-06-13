@@ -96,6 +96,8 @@ class CRF_ServerStatsManager : SCR_BaseGameModeComponent
 	const float WALK_SPEED_CLAMP           = 10.0;
 	// Update period for distance tracking (seconds)
 	const float DISTANCE_UPDATE_PERIOD     = 10.0;
+	const int HOOK_RETRY_DELAY_MS          = 250;
+	const int HOOK_RETRY_MAX_ATTEMPTS      = 12;
 
 	// ── Private state ────────────────────────────────────────────────────────
 	private ref map<int, ref CRF_PlayerStats> m_mPlayerStats   = new map<int, ref CRF_PlayerStats>();
@@ -117,6 +119,9 @@ class CRF_ServerStatsManager : SCR_BaseGameModeComponent
 
 	// Staggered AAR send queue (one entry per connected player).
 	private ref array<int> m_aPendingAARSends = {};
+
+	// Guard against double-flush if both CRF state transition and engine OnGameModeEnd fire.
+	private bool m_bMissionEndTriggered = false;
 
 	// Singleton
 	private static CRF_ServerStatsManager s_Instance;
@@ -149,37 +154,58 @@ class CRF_ServerStatsManager : SCR_BaseGameModeComponent
 
 	//------------------------------------------------------------------------------------------------
 	//! Called from CRF_GamemodeManager.InitilizePlayer for every non-spectator player.
-	//! Creates a stats record and attaches entity-level invokers.
+	//! On first spawn, creates a fresh stats record.
+	//! On respawn (existing non-flushed record), preserves accumulated stats and re-wires
+	//! entity-level hooks to the new character entity so distance and action tracking continues.
 	void NotifyPlayerSpawned(int playerId, IEntity playerEntity)
 	{
 		if (!playerEntity || playerId <= 0)
 			return;
 
-		Print(string.Format("[CRF_ServerStatsManager] Tracking stats for player %1 (ID: %2)",
-			GetGame().GetPlayerManager().GetPlayerName(playerId), playerId), LogLevel.VERBOSE);
+		CRF_PlayerStats existingStats = m_mPlayerStats.Get(playerId);
+		bool isRespawn = (existingStats && !existingStats.flushed);
 
-		// Initialise (or reset) this player's record.
-		CRF_PlayerStats stats = new CRF_PlayerStats();
-		stats.playerName    = GetGame().GetPlayerManager().GetPlayerName(playerId);
-		stats.guid          = SCR_PlayerIdentityUtils.GetPlayerIdentityId(playerId);
-		stats.session_start = GetGame().GetWorld().GetWorldTime(); // ms
-
-		// Resolve faction from slotting manager (authoritative at spawn time).
-		CRF_SlottingManager slottingManager = CRF_SlottingManager.GetInstance();
-		if (slottingManager)
+		if (isRespawn)
 		{
-			Faction f = slottingManager.GetPlayerSlotFaction(playerId, true);
-			if (f)
-				stats.faction = f.GetFactionKey();
+			Print(string.Format("[CRF_ServerStatsManager] Respawn — continuing stats for player %1 (ID: %2)",
+				GetGame().GetPlayerManager().GetPlayerName(playerId), playerId), LogLevel.VERBOSE);
+
+			// The old entity is dead/destroyed; its EHM hooks are auto-cleaned by the engine.
+			// We only need to clear the distance-tracking maps so EOnFrame stops referencing
+			// the dead entity and we can re-register on the new one below.
+			m_mWalkingPlayers.Remove(playerId);
+			m_mDriverVehicle.Remove(playerId);
+			m_mOccupantVehicle.Remove(playerId);
+		}
+		else
+		{
+			Print(string.Format("[CRF_ServerStatsManager] Tracking stats for player %1 (ID: %2)",
+				GetGame().GetPlayerManager().GetPlayerName(playerId), playerId), LogLevel.VERBOSE);
+
+			// Initialise a fresh stats record (first spawn, or fresh session after flush).
+			CRF_PlayerStats stats = new CRF_PlayerStats();
+			stats.playerName    = GetGame().GetPlayerManager().GetPlayerName(playerId);
+			stats.guid          = SCR_PlayerIdentityUtils.GetPlayerIdentityId(playerId);
+			stats.session_start = GetGame().GetWorld().GetWorldTime(); // ms
+
+			// Resolve faction from slotting manager (authoritative at spawn time).
+			CRF_SlottingManager slottingManager = CRF_SlottingManager.GetInstance();
+			if (slottingManager)
+			{
+				Faction f = slottingManager.GetPlayerSlotFaction(playerId, true);
+				if (f)
+					stats.faction = f.GetFactionKey();
+			}
+
+			m_mPlayerStats.Set(playerId, stats);
 		}
 
-		m_mPlayerStats.Set(playerId, stats);
-
-		// Start tracking on-foot distance.
+		// Start tracking on-foot distance with the new entity.
 		m_mWalkingPlayers.Set(playerId, playerEntity);
 
 		// Attach entity-level invokers for shots, grenades, healing, compartment.
-		RegisterEntityHooks(playerId, playerEntity);
+		// Retry briefly in case character subcomponents are not ready on the same frame.
+		RegisterEntityHooksWithRetry(playerId, playerEntity, 0);
 	}
 
 	//==============================================================================================
@@ -318,10 +344,23 @@ class CRF_ServerStatsManager : SCR_BaseGameModeComponent
 	//! Called at the end of the game mode - flush all unflushed players.
 	override void OnGameModeEnd(SCR_GameModeEndData data)
 	{
+		NotifyMissionEnded();
+	}
+
+	//------------------------------------------------------------------------------------------------
+	//! Flush all remaining player stats to the log and queue in-game AAR data sends.
+	//! Called either from CRF_Gamemode when transitioning to AAR state, or from OnGameModeEnd as
+	//! a fallback. The one-shot flag prevents double-work if both paths fire.
+	void NotifyMissionEnded()
+	{
 		if (RplSession.Mode() != RplMode.Dedicated && RplSession.Mode() != RplMode.Listen)
 			return;
 
-		Print(string.Format("[CRF_ServerStatsManager] Game mode ended — flushing stats for %1 players", m_mPlayerStats.Count()), LogLevel.NORMAL);
+		if (m_bMissionEndTriggered)
+			return;
+		m_bMissionEndTriggered = true;
+
+		Print(string.Format("[CRF_ServerStatsManager] Mission ended — flushing stats for %1 players", m_mPlayerStats.Count()), LogLevel.NORMAL);
 
 		// Determine the winning faction (sourced from CRF_LoggingManager).
 		FactionKey winningFaction = "";
@@ -452,34 +491,73 @@ class CRF_ServerStatsManager : SCR_BaseGameModeComponent
 	//==============================================================================================
 
 	//------------------------------------------------------------------------------------------------
-	protected void RegisterEntityHooks(int playerId, IEntity playerEntity)
+	protected bool RegisterEntityHooks(int playerId, IEntity playerEntity)
 	{
 		if (!playerEntity)
-			return;
+			return false;
+
+		bool hasAnyHook = false;
 
 		// ── Shots & grenades — EventHandlerManagerComponent ─────────────────
 		EventHandlerManagerComponent ehm = EventHandlerManagerComponent.Cast(
 			playerEntity.FindComponent(EventHandlerManagerComponent));
 		if (ehm)
 		{
+			ehm.RemoveScriptHandler("OnProjectileShot", this, OnWeaponFired_Wrapper);
+			ehm.RemoveScriptHandler("OnGrenadeThrown",  this, OnGrenadeThrown_Wrapper);
 			ehm.RegisterScriptHandler("OnProjectileShot", this, OnWeaponFired_Wrapper);
 			ehm.RegisterScriptHandler("OnGrenadeThrown",  this, OnGrenadeThrown_Wrapper);
+			hasAnyHook = true;
 		}
 
 		// ── Healing items — SCR_CharacterControllerComponent ────────────────
 		SCR_CharacterControllerComponent charCtrl = SCR_CharacterControllerComponent.Cast(
 			playerEntity.FindComponent(SCR_CharacterControllerComponent));
 		if (charCtrl)
+		{
+			charCtrl.m_OnItemUseEndedInvoker.Remove(OnHealingItemUsed);
 			charCtrl.m_OnItemUseEndedInvoker.Insert(OnHealingItemUsed);
+			hasAnyHook = true;
+		}
 
 		// ── Compartment access — for driving / occupant tracking ─────────────
 		SCR_CompartmentAccessComponent compartmentAccess = SCR_CompartmentAccessComponent.Cast(
 			playerEntity.FindComponent(SCR_CompartmentAccessComponent));
 		if (compartmentAccess)
 		{
+			compartmentAccess.GetOnCompartmentEntered().Remove(OnCompartmentEntered);
+			compartmentAccess.GetOnCompartmentLeft().Remove(OnCompartmentLeft);
 			compartmentAccess.GetOnCompartmentEntered().Insert(OnCompartmentEntered);
 			compartmentAccess.GetOnCompartmentLeft().Insert(OnCompartmentLeft);
+			hasAnyHook = true;
 		}
+
+		return hasAnyHook;
+	}
+
+	//------------------------------------------------------------------------------------------------
+	protected void RegisterEntityHooksWithRetry(int playerId, IEntity playerEntity, int attempt)
+	{
+		if (!playerEntity || playerId <= 0)
+			return;
+
+		PlayerManager playerManager = GetGame().GetPlayerManager();
+		if (!playerManager || !playerManager.IsPlayerConnected(playerId))
+			return;
+
+		if (playerManager.GetPlayerControlledEntity(playerId) != playerEntity)
+			return;
+
+		if (RegisterEntityHooks(playerId, playerEntity))
+			return;
+
+		if (attempt + 1 >= HOOK_RETRY_MAX_ATTEMPTS)
+		{
+			Print(string.Format("[CRF_ServerStatsManager] WARNING: Failed to attach entity hooks for player %1 after %2 attempts", playerId, HOOK_RETRY_MAX_ATTEMPTS), LogLevel.WARNING);
+			return;
+		}
+
+		GetGame().GetCallqueue().CallLater(RegisterEntityHooksWithRetry, HOOK_RETRY_DELAY_MS, false, playerId, playerEntity, attempt + 1);
 	}
 
 	//------------------------------------------------------------------------------------------------
