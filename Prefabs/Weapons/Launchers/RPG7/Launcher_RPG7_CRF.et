@@ -24,7 +24,7 @@ GenericEntity : "{BD048236F83D85DA}Prefabs/Weapons/Launchers/RPG7/Launcher_RPG7_
    components {
     SCR_MuzzleInMagComponent "{50F65D04F21F7633}" {
      AllowWeaponDeployment 0
-     AmmoTemplate "{FBBF84E3B447D822}Prefabs/Weapons/Ammo/RPG/RHS_AmmoRocket_PG7VL.et"
+     AmmoTemplate "{609E216CBF8D0B68}Prefabs/Weapons/Ammo/Ammo_Rocket_PG7VL.et"
      AllowDetachingProjectile 1
     }
    }

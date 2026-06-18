@@ -16,7 +16,7 @@ GenericEntity : "{1414EEC1849D2447}Prefabs/Weapons/MachineGuns/PKM/MG_PKP_base.e
     }
     AttachmentSlotComponent "{62435EDF164C1918}" {
      AttachmentSlot InventoryStorageSlot Left_RIS {
-      Prefab "{9A185BC14F1166B4}Prefabs/Weapons/Attachments/Lasers/anpeq15/Laser_ANPEQ15_tan.et"
+      Prefab "{D74EB77B38A8C601}Prefabs/Weapons/Attachments/Laser/PEQ15_RIS.et"
      }
     }
     AttachmentSlotComponent "{62435EDF98DC9FCA}" {

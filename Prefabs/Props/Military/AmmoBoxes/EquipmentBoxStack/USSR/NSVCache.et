@@ -62,7 +62,7 @@ GenericEntity : "{39C4DF0581F3283F}Prefabs/Props/Military/AmmoBoxes/EquipmentBox
     }
     MultiSlotConfiguration "{65753B3B2F5C2BA1}" {
      SlotTemplate EquipmentStorageSlot RPK {
-      Prefab "{7611D0DAE5796941}Prefabs/Items/Equipment/Backpacks/Backpack_USSR_Bipod.et"
+      Prefab "{CE832B86D234AD62}Prefabs/Items/Equipment/Backpacks/CRF_Backpack_Invisable.et"
      }
      NumSlots 1
     }

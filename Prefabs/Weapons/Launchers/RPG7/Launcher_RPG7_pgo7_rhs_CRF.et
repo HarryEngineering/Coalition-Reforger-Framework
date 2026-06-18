@@ -9,7 +9,7 @@ GenericEntity : "{7A82FE978603F137}Prefabs/Weapons/Launchers/RPG7/Launcher_RPG7.
      }
     }
     SCR_MuzzleInMagComponent "{50F65D04F21F7633}" {
-     AmmoTemplate "{86A7681BD1D4E4BB}Prefabs/Weapons/Ammo/RPG/RHS_AmmoRocket_PG7VR.et"
+     AmmoTemplate "{AA658D334766D4EE}Prefabs/Weapons/Ammo/Ammo_Rocket_PG7VR.et"
     }
    }
   }

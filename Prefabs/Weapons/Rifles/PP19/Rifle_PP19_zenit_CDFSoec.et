@@ -33,7 +33,7 @@ GenericEntity : "{D36B63749768F2B5}Prefabs/Weapons/Rifles/PP19/Rifle_PP19_base.e
     }
     AttachmentSlotComponent "{646555552ED72735}" {
      AttachmentSlot RHS_SlidingInventoryStorageSlot Left_RIS {
-      Prefab "{9A185BC14F1166B4}Prefabs/Weapons/Attachments/Lasers/anpeq15/Laser_ANPEQ15_tan.et"
+      Prefab "{D74EB77B38A8C601}Prefabs/Weapons/Attachments/Laser/PEQ15_RIS.et"
      }
     }
     AttachmentSlotComponent "{64655556F598F703}" {

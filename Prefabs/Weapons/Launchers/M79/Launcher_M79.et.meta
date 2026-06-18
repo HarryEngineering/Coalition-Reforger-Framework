@@ -1,5 +1,5 @@
 MetaFileClass {
- Name "{99091B7E143DFF06}Prefabs/Weapons/Rifles/SCARH/Rifle_SCARH_FDE_M203_plain.et"
+ Name "{83096A3D7ACA6A07}Prefabs/Weapons/Launchers/M79/Launcher_M79.et"
  Configurations {
   EntityTemplateResourceClass PC {
   }

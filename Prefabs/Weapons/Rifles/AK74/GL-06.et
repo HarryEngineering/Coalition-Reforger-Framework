@@ -1,0 +1,20 @@
+GenericEntity : "{C799626BAE7AA2F3}Prefabs/Weapons/Rifles/AK74/RGM-40_base.et" {
+ ID "CFBAA4B725411E45"
+ components {
+  WeaponComponent "{CFBAA4B706BA66E8}" {
+   components {
+    MuzzleInMagComponent "{6914B9F3A689342D}" {
+     MagazineWell MagazineWellUS_UGL "{55349E9229B55D96}" {
+     }
+     AmmoTemplate "{1663496AE5B9F10B}Prefabs/Weapons/Ammo/Ammo_Grenade_HEDP_M433.et"
+    }
+    WeaponAnimationComponent "{60B4EA76EB15F6E0}" {
+     AnimInstance "{BB64841155712D14}Assets/Weapons/Rifles/workspaces/GL06_ak74_GP25_weapon.asi"
+     AnimInjection AnimationAttachmentInfo "{69148A1D296ECB50}" {
+      AnimInstance "{403A1520CD7049F8}Assets/Weapons/Rifles/workspaces/GL06_ak74_GP25_player.asi"
+     }
+    }
+   }
+  }
+ }
+}

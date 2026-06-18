@@ -49,7 +49,7 @@ GenericEntity : "{E7886C036D8FF4EC}Prefabs/Weapons/Rifles/ASVAL/Rifle_ASVAL_base
      AttachmentSlot InventoryStorageSlot FrontRIS_Top {
       PivotID "Scene_Root"
       Offset 0 0.0811 0.4443
-      Prefab "{9A185BC14F1166B4}Prefabs/Weapons/Attachments/Lasers/anpeq15/Laser_ANPEQ15_tan.et"
+      Prefab "{D74EB77B38A8C601}Prefabs/Weapons/Attachments/Laser/PEQ15_RIS.et"
       InspectionWidgetOffset 0 0.0884 0.4401
      }
      AttachmentType AttachmentRIS1913Short "{663C472C348EB817}" {

@@ -10,7 +10,7 @@ GenericEntity : "{963C30104F042642}Prefabs/Weapons/Rifles/RD704/Rifle_RD704_base
     }
     AttachmentSlotComponent "{61C7623B766D3CCF}" {
      AttachmentSlot RHS_SlidingInventoryStorageSlot underbarrel {
-      Prefab "{9A185BC14F1166B4}Prefabs/Weapons/Attachments/Lasers/anpeq15/Laser_ANPEQ15_tan.et"
+      Prefab "{D74EB77B38A8C601}Prefabs/Weapons/Attachments/Laser/PEQ15_RIS.et"
      }
     }
     AttachmentSlotComponent "{61C849840F72E3D3}" {
