@@ -16,6 +16,9 @@ CRF_PlayerController : "{225E51284CC95CFA}Prefabs/Characters/Core/DefaultPlayerC
      m_aWhitelistedRoles {
       MEDICAL_OFFICER MEDIC
      }
+     m_aWhitelistedFactions {
+      CIV
+     }
     }
     CRF_PlayerMenuManager "{68C4425E8FB6F16D}" {
     }
@@ -84,6 +87,9 @@ CRF_PlayerController : "{225E51284CC95CFA}Prefabs/Characters/Core/DefaultPlayerC
      m_LayoutPath "{47864BB47AB0B1F4}UI/layouts/HUD/CampaignMP/CampaignMainHUD.layout"
      m_eLayer ALWAYS_TOP
      m_bAdaptiveOpacity 1
+    }
+    CRF_AreaTimerDisplay "{69B445EC3FAC8428}" {
+     m_LayoutPath "{E7A6684951B3FC05}UI/layouts/HUD/AreaTimer/CRF_AreaTimerDisplay.layout"
     }
    }
   }
