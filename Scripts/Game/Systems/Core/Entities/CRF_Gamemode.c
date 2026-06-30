@@ -65,6 +65,9 @@ class CRF_Gamemode : SCR_BaseGameMode
 	
 	[Attribute("", UIWidgets.Hidden)]
 	ref	array<ref CRF_MissionDescriptor> m_aMissionDescriptors;
+
+	[Attribute("", UIWidgets.Auto, desc: "Default descriptors pre-populated when running the Configure Descriptions plugin", category: "CRF Mission Settings - Descriptors")]
+	ref array<ref CRF_MissionDescriptor> m_aDefaultMissionDescriptors;
 	
 	[Attribute("", UIWidgets.Hidden)]
 	int m_iFactionOneRatio;
@@ -129,19 +132,19 @@ class CRF_Gamemode : SCR_BaseGameMode
 	//------------------------------------------------------------------------------------
 	[Attribute("", UIWidgets.Auto, desc: "Gearscript applied to all blufor players", category: "CRF Gearscript Settings - Advanced")]
 	ref CRF_GearScriptContainer m_BLUFORGearScriptSettings;
-	[RplProp()] ResourceName m_rBLUFORCurrentGearScript = m_BLUFORGearScriptSettings.m_rGearScript;
+	[RplProp()] ResourceName m_rBLUFORCurrentGearScript;
 
 	[Attribute("", UIWidgets.Auto, desc: "Gearscript applied to all opfor players", category: "CRF Gearscript Settings - Advanced")]
 	ref CRF_GearScriptContainer m_OPFORGearScriptSettings;
-	[RplProp()] ResourceName m_rOPFORCurrentGearScript = m_OPFORGearScriptSettings.m_rGearScript;
+	[RplProp()] ResourceName m_rOPFORCurrentGearScript;
 
 	[Attribute("", UIWidgets.Auto, desc: "Gearscript applied to all indfor players", category: "CRF Gearscript Settings - Advanced")]
 	ref CRF_GearScriptContainer m_INDFORGearScriptSettings;
-	[RplProp()] ResourceName m_rINDFORCurrentGearScript = m_INDFORGearScriptSettings.m_rGearScript;
+	[RplProp()] ResourceName m_rINDFORCurrentGearScript;
 
 	[Attribute("", UIWidgets.Auto, desc: "Gearscript applied to all civ players", category: "CRF Gearscript Settings - Advanced")]
 	ref CRF_GearScriptContainer m_CIVILIANGearScriptSettings;
-	[RplProp()] ResourceName m_rCIVILIANCurrentGearScript = m_CIVILIANGearScriptSettings.m_rGearScript;
+	[RplProp()] ResourceName m_rCIVILIANCurrentGearScript;
 
 	// Vehicle Gearscript Enable/Disable per Side
 	//------------------------------------------------------------------------------------
@@ -212,17 +215,29 @@ class CRF_Gamemode : SCR_BaseGameMode
 	override void EOnInit(IEntity owner)
 	{
 		super.EOnInit(owner);
-		
+
+		// Populate RplProp gearscript resources from attribute containers now that
+		// attributes are guaranteed to be loaded. The containers can be null if the
+		// mission designer left a faction unassigned, so guard each one.
+		if (m_BLUFORGearScriptSettings)
+			m_rBLUFORCurrentGearScript = m_BLUFORGearScriptSettings.m_rGearScript;
+		if (m_OPFORGearScriptSettings)
+			m_rOPFORCurrentGearScript = m_OPFORGearScriptSettings.m_rGearScript;
+		if (m_INDFORGearScriptSettings)
+			m_rINDFORCurrentGearScript = m_INDFORGearScriptSettings.m_rGearScript;
+		if (m_CIVILIANGearScriptSettings)
+			m_rCIVILIANCurrentGearScript = m_CIVILIANGearScriptSettings.m_rGearScript;
+
 		// Load configs on dedicated server
 		if (RplSession.Mode() == RplMode.Dedicated) {
-			CRF_ModeratorConfig.LoadConfig();	
+			CRF_ModeratorConfig.LoadConfig();
 			CRF_DonatorConfig.LoadConfig();
 			CRF_BugReportConfig.LoadConfig();
-			
+
 			// Initialize sight arsenal registry for optimized RPC
 			CRF_SightArsenalRegistry.InitializeRegistry();
 		}
-	
+
 		// Initialize all manager references
 		m_RespawnManager = CRF_RespawnManager.GetInstance();
 		m_GamemodeManager = CRF_GamemodeManager.GetInstance();
@@ -232,9 +247,8 @@ class CRF_Gamemode : SCR_BaseGameMode
 		m_RplBroadcastManager = CRF_RplBroadcastManager.GetInstance();
 		m_LoggingManager = CRF_LoggingManager.GetInstance();
 		m_GarbageManager = CRF_GarbageManager.GetInstance();
-		
-		// Enable frame events for batch processing
-		SetEventMask(EntityEvent.FRAME);
+
+		// Frame events enabled on-demand when batch processing starts
 	}
 
 	//------------------------------------------------------------------------------------------------
@@ -566,7 +580,8 @@ class CRF_Gamemode : SCR_BaseGameMode
 		if (!m_bProcessingInitializations)
 		{
 			m_bProcessingInitializations = true;
-			m_fBatchTimer = 0.0; // Reset timer
+			m_fBatchTimer = 0.0;
+			SetEventMask(EntityEvent.FRAME);
 		}
 	}
 	
@@ -579,6 +594,7 @@ class CRF_Gamemode : SCR_BaseGameMode
 		if (m_aPendingPlayerInitializations.IsEmpty())
 		{
 			m_bProcessingInitializations = false;
+			ClearEventMask(EntityEvent.FRAME);
 			return;
 		}
 		
@@ -636,6 +652,7 @@ class CRF_Gamemode : SCR_BaseGameMode
 		m_aPendingPlayerInitializations.Clear();
 		m_mPlayerInitializationRetries.Clear();
 		m_bProcessingInitializations = false;
+		ClearEventMask(EntityEvent.FRAME);
 	}
 	
 	//------------------------------------------------------------------------------------------------
@@ -788,7 +805,14 @@ class CRF_Gamemode : SCR_BaseGameMode
 	{
 		m_sInstance = this;
 	}
-	
+
+	//------------------------------------------------------------------------------------------------
+	void ~CRF_Gamemode()
+	{
+		if (m_sInstance == this)
+			m_sInstance = null;
+	}
+
 	//------------------------------------------------------------------------------------------------
 	static CRF_Gamemode GetInstance()
 	{
