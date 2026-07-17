@@ -66,6 +66,15 @@ class CRF_SlottingMenu: ChimeraMenuBase
 	protected bool m_bShowingUnslotted = false;  // Whether the unslotted tab is active
 
 	//---------------------------------------------------------------------
+	// Controller Slot List Navigation
+	//---------------------------------------------------------------------
+	protected int m_iFocusedSlotIndex = -1;      // Index in m_cSlotListBoxComponent currently focus-highlighted, -1 if none
+	protected Widget m_wHighlightedSlotWidget;   // PlayerName TextWidget of the currently focus-highlighted slot row
+	protected ref Color m_cSlotListOriginalColor; // Captured original color of m_wHighlightedSlotWidget, to restore on move-away
+	protected float m_fSlotListHoldTimer = 0;    // Time the current d-pad list-nav direction has been held
+	protected int m_iSlotListHoldDirection = 0;  // -1/0/1 - which direction CRF_SlottingListNext/Prev is currently held in
+
+	//---------------------------------------------------------------------
 	// Consts
 	//---------------------------------------------------------------------
 	const string EMPTY_RESOURCE = "{2E717F4664C6E49D}UI/Textures/Nametags/Nametag-Filter-Icons/Player.edds";
@@ -120,7 +129,10 @@ class CRF_SlottingMenu: ChimeraMenuBase
 		}
 		
 		// Setup faction button event handlers
-		SetupFactionButtons();			
+		SetupFactionButtons();
+
+		// Give a widget default focus so controller D-pad/stick navigation has somewhere to start
+		SetupDefaultFocus();
 	}
 	
 	/**
@@ -135,8 +147,20 @@ class CRF_SlottingMenu: ChimeraMenuBase
 		}
 		GetGame().GetInputManager().AddActionListener("MenuBack", EActionTrigger.DOWN, Action_Exit);
 		GetGame().GetInputManager().AddActionListener("ChatToggle", EActionTrigger.DOWN, Action_OnChatToggleAction);
+
+		// Controller shoulder-button faction cycling (also bound to [ and ] on keyboard)
+		GetGame().GetInputManager().AddActionListener("CRF_SlottingFactionNext", EActionTrigger.DOWN, Action_CycleFactionNext);
+		GetGame().GetInputManager().AddActionListener("CRF_SlottingFactionPrev", EActionTrigger.DOWN, Action_CycleFactionPrev);
+
+		// Controller Y button / keyboard Tab toggles the admin-only Players/Unslotted tab
+		GetGame().GetInputManager().AddActionListener("CRF_SlottingToggleTab", EActionTrigger.DOWN, Action_ToggleUnslottedTab);
+
+		// Controller D-pad / keyboard Up-Down navigate the slot/role list, since these
+		// dynamically-created list items are not reachable via the engine's default focus navigation
+		GetGame().GetInputManager().AddActionListener("CRF_SlottingListNext", EActionTrigger.DOWN, Action_SlotListNext);
+		GetGame().GetInputManager().AddActionListener("CRF_SlottingListPrev", EActionTrigger.DOWN, Action_SlotListPrev);
 	}
-	
+
 	/**
 	 * Initializes all UI components
 	 */
@@ -424,7 +448,214 @@ class CRF_SlottingMenu: ChimeraMenuBase
 		SCR_ButtonTextComponent.Cast(ButtonWidget.Cast(m_wRoot.FindAnyWidget("ButtonIndfor")).FindHandler(SCR_ButtonTextComponent)).m_OnClicked.Insert(SelectFactionIndfor);
 		SCR_ButtonTextComponent.Cast(ButtonWidget.Cast(m_wRoot.FindAnyWidget("ButtonCiv")).FindHandler(SCR_ButtonTextComponent)).m_OnClicked.Insert(SelectFactionCiv);
 	}
-	
+
+	/**
+	 * Sets initial widget focus so controller D-pad/stick navigation has a starting point.
+	 * Without this the engine's focus-based navigation has nothing focused to move from.
+	 */
+	protected void SetupDefaultFocus()
+	{
+		FocusSelectedFactionButton();
+	}
+
+	/**
+	 * Cycles to the next valid faction (controller shoulder button / keyboard ])
+	 */
+	void Action_CycleFactionNext()
+	{
+		CycleFaction(1);
+	}
+
+	/**
+	 * Cycles to the previous valid faction (controller shoulder button / keyboard [)
+	 */
+	void Action_CycleFactionPrev()
+	{
+		CycleFaction(-1);
+	}
+
+	/**
+	 * Selects the next/previous valid faction relative to the currently selected one,
+	 * wrapping around, and moves widget focus onto its button.
+	 * @param direction - +1 for next, -1 for previous
+	 */
+	protected void CycleFaction(int direction)
+	{
+		array<string> factionKeys = GetValidFactionKeysOrdered();
+		if (factionKeys.IsEmpty())
+			return;
+
+		int currentIndex = -1;
+		if (m_fSelectedFaction)
+			currentIndex = factionKeys.Find(m_fSelectedFaction.GetFactionKey());
+
+		int nextIndex = (currentIndex + direction + factionKeys.Count()) % factionKeys.Count();
+
+		switch (factionKeys[nextIndex])
+		{
+			case "BLUFOR": SelectFactionBlufor(); break;
+			case "OPFOR": SelectFactionOpfor(); break;
+			case "INDFOR": SelectFactionIndfor(); break;
+			case "CIV": SelectFactionCiv(); break;
+		}
+
+		FocusSelectedFactionButton();
+	}
+
+	/**
+	 * Returns the keys of all valid factions for this mission, in display order
+	 */
+	protected array<string> GetValidFactionKeysOrdered()
+	{
+		array<string> factionKeys = {};
+		CRF_SlottingManager slottingManager = CRF_SlottingManager.GetInstance();
+
+		if (slottingManager.IsFactionValid("BLUFOR"))
+			factionKeys.Insert("BLUFOR");
+		if (slottingManager.IsFactionValid("OPFOR"))
+			factionKeys.Insert("OPFOR");
+		if (slottingManager.IsFactionValid("INDFOR"))
+			factionKeys.Insert("INDFOR");
+		if (slottingManager.IsFactionValid("CIV"))
+			factionKeys.Insert("CIV");
+
+		return factionKeys;
+	}
+
+	/**
+	 * Moves widget focus onto the button of the currently selected faction
+	 */
+	protected void FocusSelectedFactionButton()
+	{
+		if (!m_fSelectedFaction)
+			return;
+
+		Widget focusTarget;
+		switch (m_fSelectedFaction.GetFactionKey())
+		{
+			case "BLUFOR": focusTarget = m_wRoot.FindAnyWidget("ButtonBlufor"); break;
+			case "OPFOR": focusTarget = m_wRoot.FindAnyWidget("ButtonOpfor"); break;
+			case "INDFOR": focusTarget = m_wRoot.FindAnyWidget("ButtonIndfor"); break;
+			case "CIV": focusTarget = m_wRoot.FindAnyWidget("ButtonCiv"); break;
+		}
+
+		if (focusTarget)
+			GetGame().GetWorkspace().SetFocusedWidget(focusTarget);
+	}
+
+	/**
+	 * Controller D-pad down / keyboard Down handler - moves the slot list focus highlight
+	 * forward to the next selectable slot row.
+	 */
+	void Action_SlotListNext()
+	{
+		MoveSlotListFocus(1);
+	}
+
+	/**
+	 * Controller D-pad up / keyboard Up handler - moves the slot list focus highlight
+	 * back to the previous selectable slot row.
+	 */
+	void Action_SlotListPrev()
+	{
+		MoveSlotListFocus(-1);
+	}
+
+	/**
+	 * Steps the focus-highlighted slot list row in the given direction, skipping over
+	 * group-header rows (which have no m_iSlotId), and wrapping around at either end.
+	 * Driven entirely by script since these dynamically-created list rows are not part
+	 * of the engine's default widget focus-navigation graph.
+	 * @param direction - +1 for next, -1 for previous
+	 */
+	protected void MoveSlotListFocus(int direction)
+	{
+		int itemCount = m_cSlotListBoxComponent.GetItemCount();
+		if (itemCount <= 0)
+			return;
+
+		int index = m_iFocusedSlotIndex;
+
+		for (int attempts = 0; attempts < itemCount; attempts++)
+		{
+			if (index < 0)
+				index = 0;
+			else
+				index = (index + direction + itemCount) % itemCount;
+
+			CRF_ListBoxElementComponent elem = m_cSlotListBoxComponent.GetCRFElementComponent(index);
+			if (elem && elem.m_iSlotId > 0)
+			{
+				FocusSlotListItem(index, elem);
+				return;
+			}
+		}
+	}
+
+	/**
+	 * Focuses and highlights a specific slot list row so it's unmistakable which slot
+	 * a controller/keyboard user currently has selected.
+	 * @param index - Index of the row within m_cSlotListBoxComponent
+	 * @param elem - The row's element component
+	 */
+	protected void FocusSlotListItem(int index, CRF_ListBoxElementComponent elem)
+	{
+		// The row's root/SlotButton widget has no Color authored in its .layout at all, so
+		// GetColor() on it returns null and SetColor(null) crashes on restore. Highlight the
+		// row's text instead - PlayerName has an authored default Color, so capture/restore
+		// is safe there.
+		TextWidget textWidget = elem.GetPlayerText();
+		if (textWidget)
+		{
+			if (m_wHighlightedSlotWidget && m_wHighlightedSlotWidget != textWidget)
+			{
+				TextWidget prevText = TextWidget.Cast(m_wHighlightedSlotWidget);
+				if (prevText && m_cSlotListOriginalColor)
+					prevText.SetColor(m_cSlotListOriginalColor);
+			}
+
+			if (m_wHighlightedSlotWidget != textWidget)
+			{
+				// GetColor() returns a live handle to the widget's own color state, not a
+				// snapshot - SetColor(gold) below would otherwise mutate this "captured"
+				// reference in place too. Deep-copy the components instead.
+				Color captured = textWidget.GetColor();
+				if (captured)
+					m_cSlotListOriginalColor = new Color(captured.R(), captured.G(), captured.B(), captured.A());
+				else
+					m_cSlotListOriginalColor = Color.White;
+			}
+
+			textWidget.SetColor(Color.FromRGBA(255, 196, 0, 255));
+			m_wHighlightedSlotWidget = textWidget;
+		}
+
+		m_iFocusedSlotIndex = index;
+
+		// Still move engine focus onto whichever widget actually owns the click handler
+		// (dedicated inner SlotButton for admin layouts, row root otherwise), so confirm/A
+		// fires the same click path a mouse click would.
+		Widget clickTarget;
+		SCR_ButtonTextComponent slotBtn = elem.GetSlotButton();
+		if (slotBtn)
+			clickTarget = slotBtn.GetRootWidget();
+		else
+			clickTarget = elem.GetRootWidget();
+
+		if (clickTarget)
+			GetGame().GetWorkspace().SetFocusedWidget(clickTarget);
+	}
+
+	/**
+	 * Clears slot list focus-navigation state. Called whenever the list is rebuilt
+	 * (faction change, initial load) so a stale index doesn't point at rebuilt content.
+	 */
+	protected void ResetSlotListFocus()
+	{
+		m_iFocusedSlotIndex = -1;
+		m_wHighlightedSlotWidget = null;
+	}
+
 	/**
 	 * Cleans up resources when the menu is closed
 	 * Removes event listeners and slot update callback
@@ -453,6 +684,12 @@ class CRF_SlottingMenu: ChimeraMenuBase
 		}
 		GetGame().GetInputManager().RemoveActionListener("MenuBack", EActionTrigger.DOWN, Action_Exit);
 		GetGame().GetInputManager().RemoveActionListener("ChatToggle", EActionTrigger.DOWN, Action_OnChatToggleAction);
+
+		GetGame().GetInputManager().RemoveActionListener("CRF_SlottingFactionNext", EActionTrigger.DOWN, Action_CycleFactionNext);
+		GetGame().GetInputManager().RemoveActionListener("CRF_SlottingFactionPrev", EActionTrigger.DOWN, Action_CycleFactionPrev);
+		GetGame().GetInputManager().RemoveActionListener("CRF_SlottingToggleTab", EActionTrigger.DOWN, Action_ToggleUnslottedTab);
+		GetGame().GetInputManager().RemoveActionListener("CRF_SlottingListNext", EActionTrigger.DOWN, Action_SlotListNext);
+		GetGame().GetInputManager().RemoveActionListener("CRF_SlottingListPrev", EActionTrigger.DOWN, Action_SlotListPrev);
 	}
 	
 	/**
@@ -532,6 +769,38 @@ class CRF_SlottingMenu: ChimeraMenuBase
 		m_wRoot.FindAnyWidget("UnslotPlayerList").SetVisible(true);
 		ButtonWidget.Cast(m_wRoot.FindAnyWidget("TabButtonPlayers")).SetColor(Color.FromRGBA(11, 11, 11, 255));
 		ButtonWidget.Cast(m_wRoot.FindAnyWidget("TabButtonUnslotted")).SetColor(Color.FromRGBA(37, 37, 37, 255));
+	}
+
+	/**
+	 * Controller Y / keyboard Tab handler - toggles between the Players and Unslotted tabs.
+	 * No-op for non-admins since the Unslotted tab button is hidden for them.
+	 */
+	void Action_ToggleUnslottedTab()
+	{
+		if (!SCR_Global.IsAdmin(SCR_PlayerController.GetLocalPlayerId()))
+			return;
+
+		if (m_bShowingUnslotted)
+			ShowPlayersTab();
+		else
+			ShowUnslottedTab();
+
+		FocusActiveTabButton();
+	}
+
+	/**
+	 * Moves widget focus onto whichever of the Players/Unslotted tab buttons is currently active
+	 */
+	protected void FocusActiveTabButton()
+	{
+		Widget focusTarget;
+		if (m_bShowingUnslotted)
+			focusTarget = m_wRoot.FindAnyWidget("TabButtonUnslotted");
+		else
+			focusTarget = m_wRoot.FindAnyWidget("TabButtonPlayers");
+
+		if (focusTarget)
+			GetGame().GetWorkspace().SetFocusedWidget(focusTarget);
 	}
 	
 	/**
@@ -745,10 +1014,13 @@ class CRF_SlottingMenu: ChimeraMenuBase
 	{
 		// Re-initialize slot counts
 		InitSlots();
-		
+
 		// Clear existing UI lists
 		m_cSlotListBoxComponent.Clear();
 		m_cOrbatListBoxComponent.Clear();
+
+		// The list is being rebuilt, so any script-tracked controller focus index is now stale
+		ResetSlotListFocus();
 		
 		// Exit if no faction is selected
 		if(!m_fSelectedFaction)
@@ -1511,6 +1783,48 @@ class CRF_SlottingMenu: ChimeraMenuBase
 		
 		// Show additional controls for admins
 		UpdateAdminUI();
+
+		// Repeat slot-list navigation while D-pad up/down is held, not just on the initial tap
+		UpdateSlotListRepeat(tDelta);
+	}
+
+	/**
+	 * Polled every frame so holding CRF_SlottingListNext/Prev keeps stepping through the slot
+	 * list, not just the initial tap that AddActionListener's DOWN trigger already handles.
+	 * The underlying list widget scrolls on its own while a d-pad direction is held (native
+	 * engine behavior, unrelated to this), which is what motivated adding this: without it the
+	 * list visibly scrolls but the script-tracked highlighted slot never follows along.
+	 * @param tDelta - Time since last update
+	 */
+	protected void UpdateSlotListRepeat(float tDelta)
+	{
+		InputManager im = GetGame().GetInputManager();
+		float nextVal = im.GetActionValue("CRF_SlottingListNext");
+		float prevVal = im.GetActionValue("CRF_SlottingListPrev");
+
+		int heldDirection = 0;
+		if (nextVal > 0.5)
+			heldDirection = 1;
+		else if (prevVal > 0.5)
+			heldDirection = -1;
+
+		// Direction released or just changed - the DOWN-trigger listener already handles the
+		// initial step for a fresh press, so just (re)start the hold timer here.
+		if (heldDirection == 0 || heldDirection != m_iSlotListHoldDirection)
+		{
+			m_iSlotListHoldDirection = heldDirection;
+			m_fSlotListHoldTimer = 0;
+			return;
+		}
+
+		// Same direction still held - wait out an initial delay, then repeat at a steady rate
+		m_fSlotListHoldTimer += tDelta;
+
+		if (m_fSlotListHoldTimer >= 0.4)
+		{
+			m_fSlotListHoldTimer -= 0.12;
+			MoveSlotListFocus(heldDirection);
+		}
 	}
 	
 	/**

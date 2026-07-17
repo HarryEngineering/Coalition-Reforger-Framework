@@ -81,7 +81,8 @@ enum CRF_ESlotUpdateField
 	GROUP,
 	LOCKED,
 	DEATH,
-	ROLE
+	ROLE,
+	RESPAWNS_REMAINING
 }
 
 //------------------------------------------------------------------------------------
@@ -183,7 +184,8 @@ modded enum ChimeraMenuPreset : ScriptMenuPresetEnum
 	CRF_GungameStart,
 	CRF_GunGameEnd,
 	CRF_RallyResults,
-	CRF_PropHuntTransformMenu
+	CRF_PropHuntTransformMenu,
+	CRF_JIPForwardDeployMenu
 }
 
 //------------------------------------------------------------------------------------
@@ -223,6 +225,26 @@ enum CRF_ESlottingState
 	LEADERSANDMEDICS,  // Only leaders and medics can select slots
 	SPECIALTIES,       // Specialist roles become available
 	EVERYONE           // All roles available to all players
+}
+
+//------------------------------------------------------------------------------------
+// Enumeration for mission-wide respawn gating mode
+//------------------------------------------------------------------------------------
+
+enum CRF_ERespawnMode
+{
+	TEAM = 0,   // Shared faction ticket pool (default)
+	SLOT        // Per-role/per-group respawn counts configured on each CRF_SlottingGroup
+}
+
+//------------------------------------------------------------------------------------
+// Enumeration for how a squad's respawn pool is shared (only used in CRF_ERespawnMode.SLOT)
+//------------------------------------------------------------------------------------
+
+enum CRF_ERespawnPoolType
+{
+	PER_SLOT = 0,   // Each role/slot in the group tracks its own respawn count
+	PER_GROUP       // The whole group shares one respawn count
 }
 
 //------------------------------------------------------------------------------------
