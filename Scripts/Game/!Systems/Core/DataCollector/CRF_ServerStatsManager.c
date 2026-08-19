@@ -399,10 +399,14 @@ class CRF_ServerStatsManager : SCR_BaseGameModeComponent
 		if (victimStats)
 			victimStats.deaths++;
 
-		// Record kill / friendly-kill for the killer
+		// Record kill / friendly-kill for the killer.
 		int killerPlayerId = 0;
-		if (instigator)
+		if (killerEntity)
+			killerPlayerId = GetGame().GetPlayerManager().GetPlayerIdFromControlledEntity(killerEntity);
+		if (killerPlayerId <= 0 && instigator)
 			killerPlayerId = instigator.GetInstigatorPlayerID();
+		if (killerPlayerId <= 0)
+			killerPlayerId = instigatorContextData.GetKillerPlayerID();
 
 		if (killerPlayerId <= 0 || killerPlayerId == victimPlayerId)
 			return;
@@ -440,6 +444,21 @@ class CRF_ServerStatsManager : SCR_BaseGameModeComponent
 	override void OnGameModeEnd(SCR_GameModeEndData data)
 	{
 		NotifyMissionEnded();
+	}
+
+	//------------------------------------------------------------------------------------------------
+	//! Called from CRF_COA_Gamemode when a new round begins (COA_EGamemodeState.SLOTTING).
+	//! This component is a persistent singleton that outlives many SLOTTING/GAME/AAR cycles
+	//! within the same mission load, so the one-shot m_bMissionEndTriggered guard and the
+	//! session-scoped kill/death tracking MUST be cleared here - otherwise NotifyMissionEnded()
+	//! silently no-ops for every round after the first, and stale kill/death names from the
+	//! previous round bleed into this round's AAR kill panel.
+	void ResetForNewRound()
+	{
+		m_bMissionEndTriggered = false;
+		m_mSessionKills.Clear();
+		m_mSessionDeaths.Clear();
+		m_aPendingAARSends.Clear();
 	}
 
 	//------------------------------------------------------------------------------------------------
