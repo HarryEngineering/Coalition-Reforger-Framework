@@ -109,7 +109,7 @@ modded class COA_PlayerRplToAuthorityManager : ScriptComponent
 	{
 		Rpc(RpcAsk_ReportSettingsViolation, playerId, violationType);
 	}
-	
+
 	//------------------------------------------------------------------------------------------------
 	void RequestVehicleDepotInteraction(int playerId, int vehicleIndex, RplId depotRplId)
 	{
@@ -306,7 +306,16 @@ modded class COA_PlayerRplToAuthorityManager : ScriptComponent
 	{
 		Rpc(RpcAsk_RequestStopPositionalSound, soundEvent);
 	}
-	
+
+	//------------------------------------------------------------------------------------------------
+	//! Asks the server to pick up a Capture The Flag flag on behalf of playerId. The server
+	//! re-validates ownership/faction rules in CRF_CTFGamemodeManager.TryPickUpFlag(), so this
+	//! is only ever a request.
+	void RequestCTFFlagPickup(int playerId, RplId flagRplId)
+	{
+		Rpc(RpcAsk_RequestCTFFlagPickup, playerId, flagRplId);
+	}
+
 //=============================================================================================================================================================================================================================================================================================================================================================
 //	 REPLICATION METHODS
 //=============================================================================================================================================================================================================================================================================================================================================================
@@ -598,9 +607,9 @@ modded class COA_PlayerRplToAuthorityManager : ScriptComponent
 			string itemName = prefab.Substring(prefab.LastIndexOf("/") + 1, prefab.LastIndexOf(".") - prefab.LastIndexOf("/") - 1);
 			string playerName = GetGame().GetPlayerManager().GetPlayerName(playerId);
 			string logMessage = string.Format("%2 was added to %1's inventory", playerName, itemName);
-			m_RplBroadcastManager.LogAdminAction(logMessage, playerId, true, COA_EAdminLogLevel.Low);
+			m_RplBroadcastManager.LogAdminAction(logMessage, playerId, true, COA_EAdminLogLevel.Medium);
 		}
-		
+
 		SCR_EntityHelper.DeleteEntityAndChildren(entity);
 	}
 
@@ -668,7 +677,7 @@ modded class COA_PlayerRplToAuthorityManager : ScriptComponent
 				string itemName = oldPrefab.Substring(oldPrefab.LastIndexOf("/") + 1, oldPrefab.LastIndexOf(".") - oldPrefab.LastIndexOf("/") - 1);
 				string playerName = GetGame().GetPlayerManager().GetPlayerName(playerId);
 				string logMessage = string.Format("%2 was converted in %1's inventory", playerName, itemName);
-				m_RplBroadcastManager.LogAdminAction(logMessage, playerId, true, COA_EAdminLogLevel.Low);
+				m_RplBroadcastManager.LogAdminAction(logMessage, playerId, true, COA_EAdminLogLevel.Medium);
 			}
 		}
 
@@ -697,15 +706,11 @@ modded class COA_PlayerRplToAuthorityManager : ScriptComponent
 		
 		// Log to admin action logs
 		LogAdminAction(message, playerId, false, COA_EAdminLogLevel.High);
-		
-		// Broadcast to admin chat (only admins/mods will see this)
-		if (m_RplBroadcastManager)
-			m_RplBroadcastManager.BroadcastAdminChatMessage(message);
-		
+
 		// Also log to server console
 		Print(message, LogLevel.WARNING);
 	}
-	
+
 	//------------------------------------------------------------------------------------------------
 	[RplRpc(RplChannel.Reliable, RplRcver.Server)]
 	protected void RpcAsk_MiniArsenalRequestNewItem(int playerId, string newResource, int slotId)
@@ -785,7 +790,7 @@ modded class COA_PlayerRplToAuthorityManager : ScriptComponent
 			string oldItemName = oldItemComp.GetUIInfo().GetName();
 			string newItemName = newItemComp.GetUIInfo().GetName();
 			COA_RplBroadcastManager.GetInstance().LogAdminAction(GetGame().GetPlayerManager().GetPlayerName(playerId) + " has replaced " + oldItemName + " with " + 
-			newItemName, playerId, false, COA_EAdminLogLevel.Low);
+			newItemName, playerId, false, COA_EAdminLogLevel.Medium);
 		}
 		
 		// This instance was only needed for compatibility validation. Recreate it
@@ -990,7 +995,7 @@ modded class COA_PlayerRplToAuthorityManager : ScriptComponent
 			string oldItemName = oldItemComp.GetUIInfo().GetName();
 			string newItemName = newItemComp.GetUIInfo().GetName();
 			COA_RplBroadcastManager.GetInstance().LogAdminAction(GetGame().GetPlayerManager().GetPlayerName(playerId) + " has replaced " + oldItemName + " with " + 
-			newItemName, playerId, false, COA_EAdminLogLevel.Low);
+			newItemName, playerId, false, COA_EAdminLogLevel.Medium);
 		}
 		
 		// Recreate the requested weapon after the delay. This avoids retaining
@@ -1265,7 +1270,7 @@ modded class COA_PlayerRplToAuthorityManager : ScriptComponent
 		{
 			COA_RplBroadcastManager.GetInstance().LogAdminAction(
 				GetGame().GetPlayerManager().GetPlayerName(playerId) + " has replaced their sight with " + 
-				itemComp.GetUIInfo().GetName(), playerId, false, COA_EAdminLogLevel.Low);
+				itemComp.GetUIInfo().GetName(), playerId, false, COA_EAdminLogLevel.Medium);
 		}
 	}
 	
@@ -1495,6 +1500,41 @@ modded class COA_PlayerRplToAuthorityManager : ScriptComponent
 			return;
 
 		cacheHunt.RequestDestroyCache(cache, playerId);
+	}
+
+	//------------------------------------------------------------------------------------------------
+	[RplRpc(RplChannel.Reliable, RplRcver.Server)]
+	protected void RpcAsk_RequestCTFFlagPickup(int playerId, RplId flagRplId)
+	{
+		// Telemetry: int + RplId
+		int bytes = COA_BandwidthTelemetryManager.EstimateSize_Int();
+		bytes += COA_BandwidthTelemetryManager.EstimateSize_RplId();
+		LogTelemetry("RpcAsk_RequestCTFFlagPickup", bytes);
+
+		//Print(string.Format("[CRF_CTF] RpcAsk_RequestCTFFlagPickup received on server: playerId=%1, flagRplId=%2", playerId, flagRplId), LogLevel.NORMAL);
+
+		CRF_CTFGamemodeManager ctfGamemode = CRF_CTFGamemodeManager.GetInstance();
+		if (!ctfGamemode)
+		{
+			Print("[CRF_CTF] RpcAsk_RequestCTFFlagPickup REJECTED: CRF_CTFGamemodeManager.GetInstance() returned null - is the component actually added to the gamemode entity?", LogLevel.WARNING);
+			return;
+		}
+
+		IEntity flagEntity = COA_EntityHelper.GetEntityFromRplId(flagRplId);
+		if (!flagEntity)
+		{
+			Print(string.Format("[CRF_CTF] RpcAsk_RequestCTFFlagPickup REJECTED: no entity found for RplId %1 (item not found or not yet streamed to the server).", flagRplId), LogLevel.WARNING);
+			return;
+		}
+
+		CRF_CTF_FlagComponent flagComponent = CRF_CTF_FlagComponent.Cast(flagEntity.FindComponent(CRF_CTF_FlagComponent));
+		if (!flagComponent)
+		{
+			Print(string.Format("[CRF_CTF] RpcAsk_RequestCTFFlagPickup REJECTED: entity '%1' has no CRF_CTF_FlagComponent.", flagEntity.GetName()), LogLevel.WARNING);
+			return;
+		}
+
+		ctfGamemode.TryPickUpFlag(playerId, flagComponent);
 	}
 
 	//------------------------------------------------------------------------------------------------

@@ -129,28 +129,16 @@ modded class COA_Gamemode
 	//! \param[in] iPlayerID ID of the connecting player
 	protected override void OnPlayerAuditSuccess(int iPlayerID)
 	{
+		// vanilla here is COA_Gamemode's own (pre-CRF) OnPlayerAuditSuccess, which already does the
+		// reconnect-GUID restore and QueuePlayerInitialization(iPlayerID) - don't repeat that here,
+		// this override only adds CRF-specific privilege checks on top.
 		vanilla.OnPlayerAuditSuccess(iPlayerID);
-		
+
 		// Skip processing on client
 		if (RplSession.Mode() == RplMode.Client)
 			return;
-		
-		// Reconnect restore: if this player has a pending GUID entry, force-update their slot's
-		// player ID before InitilizePlayer runs so IsPlayerInASlot() finds the correct slot.
-		// This handles dedicated-server scenarios where a reconnecting player may get a new
-		// numeric player ID but the GUID (BI account identity) remains the same.
-		if (IsMaster() && m_SlottingManager)
-		{
-			string reconnectGuid = SCR_PlayerIdentityUtils.GetPlayerIdentityId(iPlayerID);
-			int savedSlotId;
-			if (!reconnectGuid.IsEmpty() && m_mReconnectSlotByGuid.Find(reconnectGuid, savedSlotId))
-			{
-				m_mReconnectSlotByGuid.Remove(reconnectGuid);
-				m_SlottingManager.ForceUpdateSlotPlayerID(savedSlotId, iPlayerID);
-			}
-		}
-		
-		QueuePlayerInitialization(iPlayerID);
+
+		NotifyJoinInProgressStatus(iPlayerID);
 
 		// Get player's BI account GUID for privilege checks
 		string playerGUID = SCR_PlayerIdentityUtils.GetPlayerIdentityId(iPlayerID);
@@ -172,10 +160,31 @@ modded class COA_Gamemode
 		if (!playerGUID.IsEmpty()) {
 			if (COA_ModeratorConfig.IsModerator(playerGUID))
 				m_PermissionManager.SetPlayerStatus(iPlayerID, "mod");
-			
+
 			if (CRF_DonatorConfig.IsDonator(playerGUID))
 				m_PermissionManager.SetPlayerStatus(iPlayerID, "don");
 		}
+	}
+
+	//------------------------------------------------------------------------------------------------
+	//! The only real signal for "this player is joining in progress": their connection is being
+	//! audited while the round is already in COA_EGamemodeState.GAME. Every player who was already
+	//! slotted before the round started has THIS event happen during SLOTTING, never GAME - so unlike
+	//! "has SafeStart ended" (which the JIP menu used to gate on), this can't misfire for everyone at
+	//! once at round start, and it isn't retriggered by Zeus possessing an AI unit later, since that
+	//! isn't a connect event at all. See COA_PlayerController.SetIsJoinInProgress / OnControlledEntityChanged.
+	protected void NotifyJoinInProgressStatus(int playerId)
+	{
+		if (m_GamemodeState != COA_EGamemodeState.GAME)
+			return; // client already defaults to "not JIP" - nothing to tell them.
+
+		PlayerController pc = GetGame().GetPlayerManager().GetPlayerController(playerId);
+		if (!pc)
+			return;
+
+		COA_PlayerRplToOwnerManager rplManager = COA_PlayerRplToOwnerManager.Cast(pc.FindComponent(COA_PlayerRplToOwnerManager));
+		if (rplManager)
+			rplManager.SetJoinInProgress();
 	}
 	
 //=============================================================================================================================================================================================================================================================================================================================================================

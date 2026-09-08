@@ -6,7 +6,7 @@ modded class SCR_InventoryMenuUI
 	override void OnItemAddedListener( IEntity item, notnull BaseInventoryStorageComponent storage )
 	{
 		super.OnItemAddedListener(item, storage);
-		
+
 		// If the item is from an arsenal
 		if (MoveItemToStorageSlot_VirtualArsenal()) {
 			// Grab item and player information
@@ -18,18 +18,112 @@ modded class SCR_InventoryMenuUI
 
 			string name = GetGame().GetPlayerManager().GetPlayerName(SCR_PlayerController.GetLocalPlayerId());
 			InventoryItemComponent itemIIC = InventoryItemComponent.Cast(item.FindComponent(InventoryItemComponent));
+			if (!itemIIC)
+				return;
 			UIInfo itemUiInfo = itemIIC.GetUIInfo();
+			if (!itemUiInfo)
+				return;
 			RplComponent rplComponent = RplComponent.Cast(m_Player.FindComponent(RplComponent));
 			if (!rplComponent)
 				return;
 			COA_SlotData slotData = sm.GetSlotDataFromCharacter(rplComponent.Id());
-			
-			// Log to admin menu
+			if (!slotData)
+				return;
+
+			// Log to admin menu - arsenal pulls stay High priority, unlike the vehicle
+			// inventory movement logged below (see issue #1634).
 			rplManager.LogAdminAction(name + "(" + slotData.GetSlotName() + ")" + " took a(n) " + string.Format(itemUiInfo.GetName()) + " from an arsenal", -1, false, COA_EAdminLogLevel.High);
+			return;
 		}
-		
+
+		// Logs items put into a vehicle's inventory (e.g. loading extra ammo), alongside the
+		// removal logging below. Low priority: filtered out of the admin log view by default,
+		// so it doesn't spam admins, but it's still there to check if someone reports a vehicle
+		// carrying more ammo than its weight limit should allow. See issue #1634.
+		if (!CRF_IsVehicleStorage(storage))
+			return;
+
+		COA_PlayerRplToAuthorityManager rplManager = COA_PlayerRplToAuthorityManager.GetInstance();
+		COA_SlottingManager sm = COA_SlottingManager.GetInstance();
+		if (!sm || !rplManager)
+			return;
+
+		InventoryItemComponent itemIIC = InventoryItemComponent.Cast(item.FindComponent(InventoryItemComponent));
+		if (!itemIIC)
+			return;
+
+		UIInfo itemUiInfo = itemIIC.GetUIInfo();
+		if (!itemUiInfo)
+			return;
+
+		RplComponent rplComponent = RplComponent.Cast(m_Player.FindComponent(RplComponent));
+		if (!rplComponent)
+			return;
+
+		COA_SlotData slotData = sm.GetSlotDataFromCharacter(rplComponent.Id());
+		if (!slotData)
+			return;
+
+		string name = GetGame().GetPlayerManager().GetPlayerName(SCR_PlayerController.GetLocalPlayerId());
+
+		rplManager.LogAdminAction(name + "(" + slotData.GetSlotName() + ")" + " put a(n) " + string.Format(itemUiInfo.GetName()) + " into a vehicle", -1, false, COA_EAdminLogLevel.Low);
 	}
-	
+
+	//------------------------------------------------------------------------------------------------
+	//! Logs items taken out of a vehicle's inventory, alongside the arsenal logging above.
+	//! Low priority - see issue #1634: filtered out of the admin log view by default so it
+	//! doesn't spam admins, unlike the arsenal-pull logging above, but still recorded for when
+	//! someone reports a vehicle exploiting ammo-weight limits.
+	override void OnItemRemovedListener(IEntity item, notnull BaseInventoryStorageComponent storage)
+	{
+		super.OnItemRemovedListener(item, storage);
+
+		if (!CRF_IsVehicleStorage(storage))
+			return;
+
+		COA_PlayerRplToAuthorityManager rplManager = COA_PlayerRplToAuthorityManager.GetInstance();
+		COA_SlottingManager sm = COA_SlottingManager.GetInstance();
+		if (!sm || !rplManager)
+			return;
+
+		InventoryItemComponent itemIIC = InventoryItemComponent.Cast(item.FindComponent(InventoryItemComponent));
+		if (!itemIIC)
+			return;
+
+		UIInfo itemUiInfo = itemIIC.GetUIInfo();
+		RplComponent rplComponent = RplComponent.Cast(m_Player.FindComponent(RplComponent));
+		if (!rplComponent)
+			return;
+
+		COA_SlotData slotData = sm.GetSlotDataFromCharacter(rplComponent.Id());
+		if (!slotData)
+			return;
+
+		string name = GetGame().GetPlayerManager().GetPlayerName(SCR_PlayerController.GetLocalPlayerId());
+
+		// Log to admin menu
+		rplManager.LogAdminAction(name + "(" + slotData.GetSlotName() + ")" + " took a(n) " + string.Format(itemUiInfo.GetName()) + " from a vehicle", -1, false, COA_EAdminLogLevel.Low);
+	}
+
+	//------------------------------------------------------------------------------------------------
+	//! Vehicle inventory storages are attached either directly on the vehicle entity or on a child
+	//! compartment beneath it - see CRF_SCR_OpenVehicleStorageAction_Faction.DelayedInit for the same
+	//! "self, or parent" Vehicle.Cast check against a freshly-opened storage owner.
+	protected bool CRF_IsVehicleStorage(BaseInventoryStorageComponent storage)
+	{
+		if (!storage)
+			return false;
+
+		IEntity owner = storage.GetOwner();
+		if (!owner)
+			return false;
+
+		if (Vehicle.Cast(owner))
+			return true;
+
+		return Vehicle.Cast(owner.GetParent()) != null;
+	}
+
 	override void OnMenuOpen()
 	{
 		super.OnMenuOpen();
