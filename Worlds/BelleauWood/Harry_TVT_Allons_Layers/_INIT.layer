@@ -100,6 +100,7 @@ COA_Gamemode COA_Lobby : "{6A996BBFCEB37E78}Prefabs/Modded Overrides/Coalition L
    "1 x Ambulance - Free"\
    "5 x Transport - Free"\
    "5 x Higher Caliber Rifles - 100"\
+   "1 x M249 - 100"\
    "2 x UGL - 100"\
    "2 x RAT - 100"\
    "3 x Demo blocks - 100"\
@@ -121,6 +122,7 @@ COA_Gamemode COA_Lobby : "{6A996BBFCEB37E78}Prefabs/Modded Overrides/Coalition L
    "1 x Ambulance- Free"\
    "5 x Transport- Free"\
    "5 x Higher Caliber Rifles- 100"\
+   "1 x RPK - 75"\
    "2 x UGL - 100"\
    "2 x RAT - 100"\
    "3 x Demo blocks- 100"\
@@ -431,7 +433,7 @@ COA_Gamemode COA_Lobby : "{6A996BBFCEB37E78}Prefabs/Modded Overrides/Coalition L
   m_bEnableRTORadios 0
  }
  {
-  SCR_FactionManager {
+  SCR_FactionManager "6A50FAF18A9652E0" {
    ID "632A77473B3CC3A8"
    Factions {
     SCR_Faction "{607AA5C7A94496DA}" {

@@ -735,6 +735,12 @@ $grp GenericEntity : "{A1B39EC24892B0D8}PrefabsMissionMaking/Systems/VehicleDepo
       m_eCostType SUPPLIES
       m_iCost 1200
      }
+     CRF_VehicleDepotVehicle "{6A50FAF780AA546B}" {
+      m_sVehicleName "1 x M249"
+      m_sVehiclePrefab "{24AE9499B84739ED}Prefabs/Vehicles/Wheeled/M998/Kits/BLUFORUS80sARVicDepot.et"
+      m_eCostType SUPPLIES
+      m_iCost 100
+     }
     }
     m_bRestrictToLeadership 1
    }
@@ -756,6 +762,12 @@ $grp GenericEntity : "{A1B39EC24892B0D8}PrefabsMissionMaking/Systems/VehicleDepo
       m_sVehiclePrefab "{3312ADBF53A16DD8}Prefabs/Vehicles/Wheeled/LAV25/LAV25_RHS.et"
       m_eCostType SUPPLIES
       m_iCost 1200
+     }
+     CRF_VehicleDepotVehicle "{6A50FAF780AA546B}" {
+      m_sVehicleName "1 x M249"
+      m_sVehiclePrefab "{24AE9499B84739ED}Prefabs/Vehicles/Wheeled/M998/Kits/BLUFORUS80sARVicDepot.et"
+      m_eCostType SUPPLIES
+      m_iCost 100
      }
     }
     m_bRestrictToLeadership 1
@@ -779,6 +791,12 @@ $grp GenericEntity : "{A1B39EC24892B0D8}PrefabsMissionMaking/Systems/VehicleDepo
       m_eCostType SUPPLIES
       m_iCost 1200
      }
+     CRF_VehicleDepotVehicle "{6A50FAF780AA546B}" {
+      m_sVehicleName "1 x M249"
+      m_sVehiclePrefab "{24AE9499B84739ED}Prefabs/Vehicles/Wheeled/M998/Kits/BLUFORUS80sARVicDepot.et"
+      m_eCostType SUPPLIES
+      m_iCost 100
+     }
     }
     m_bRestrictToLeadership 1
    }
@@ -794,6 +812,12 @@ $grp GenericEntity : "{A1B39EC24892B0D8}PrefabsMissionMaking/Systems/VehicleDepo
       m_sVehicleName "BTR-70"
       m_sVehiclePrefab "{C012BB3488BEA0C2}Prefabs/Vehicles/Wheeled/BTR70/BTR70.et"
       m_iCost 800
+     }
+     CRF_VehicleDepotVehicle "{6A50FAF79EC11427}" {
+      m_sVehicleName "1 x RPK"
+      m_sVehiclePrefab "{03F4F645161B4BBD}Prefabs/Vehicles/Wheeled/UAZ469/Kits/OPFORARVicdepot.et"
+      m_eCostType SUPPLIES
+      m_iCost 75
      }
     }
     m_bRestrictToLeadership 1
@@ -814,6 +838,12 @@ $grp GenericEntity : "{A1B39EC24892B0D8}PrefabsMissionMaking/Systems/VehicleDepo
       m_sVehiclePrefab "{C012BB3488BEA0C2}Prefabs/Vehicles/Wheeled/BTR70/BTR70.et"
       m_iCost 800
      }
+     CRF_VehicleDepotVehicle "{6A50FAF79EC11427}" {
+      m_sVehicleName "1 x RPK"
+      m_sVehiclePrefab "{03F4F645161B4BBD}Prefabs/Vehicles/Wheeled/UAZ469/Kits/OPFORARVicdepot.et"
+      m_eCostType SUPPLIES
+      m_iCost 75
+     }
     }
     m_bRestrictToLeadership 1
    }
@@ -832,6 +862,12 @@ $grp GenericEntity : "{A1B39EC24892B0D8}PrefabsMissionMaking/Systems/VehicleDepo
       m_sVehicleName "BTR-70"
       m_sVehiclePrefab "{C012BB3488BEA0C2}Prefabs/Vehicles/Wheeled/BTR70/BTR70.et"
       m_iCost 800
+     }
+     CRF_VehicleDepotVehicle "{6A50FAF79EC11427}" {
+      m_sVehicleName "1 x RPK"
+      m_sVehiclePrefab "{03F4F645161B4BBD}Prefabs/Vehicles/Wheeled/UAZ469/Kits/OPFORARVicdepot.et"
+      m_eCostType SUPPLIES
+      m_iCost 75
      }
     }
     m_bRestrictToLeadership 1
