@@ -119,6 +119,8 @@ class CRF_ParachuteDeployedEntity : GenericEntity
 
 	protected bool m_HasLanded;
 
+	protected bool m_Released;
+
 	// Network sync
 	[Attribute("10", UIWidgets.Slider, "Network sync interval (hz)", "1 60 1")]
 	protected float m_NetworkSyncHz = 10;
@@ -250,10 +252,29 @@ class CRF_ParachuteDeployedEntity : GenericEntity
 		if (m_HasLanded || !m_Physics)
 			return;
 
-		// Run simulation on authority (server) AND on owner client for prediction
-		// Non-owner clients rely on interpolation only
+
 		if (!IsAuthority() && !IsOwner())
 			return;
+
+		// Hold the canopy stationary until the pilot is actually seated.
+		if (!m_Released)
+		{
+			if (!m_CargoSlot || m_CargoSlot.IsOccupied())
+			{
+				m_Released = true;
+				if (m_InitialVelocity != vector.Zero)
+				{
+					m_Physics.SetVelocity(m_InitialVelocity);
+					m_VelocityApplied = true;
+				}
+			}
+			else
+			{
+				m_Physics.SetVelocity(vector.Zero);
+				m_Physics.SetAngularVelocity(vector.Zero);
+				return;
+			}
+		}
 
 		if (!m_VelocityApplied && m_InitialVelocity != vector.Zero)
 		{
