@@ -83,12 +83,6 @@ $grp GenericEntity : "{83618EAF9EFD3E20}PrefabsMissionMaking/Systems/Teleporter/
   }
   coords 9483.648 153.548 2952.004
  }
- red2 {
-  coords 10192.703 216.469 4317.82
- }
- red3 {
-  coords 9527.923 120.084 9131.314
- }
  blue2 {
   components {
    ActionsManagerComponent "{645A0008F3808301}" {
@@ -166,5 +160,83 @@ $grp GenericEntity : "{83618EAF9EFD3E20}PrefabsMissionMaking/Systems/Teleporter/
    }
   }
   coords 9687.164 179.242 10560.807
+ }
+ red2 {
+  components {
+   ActionsManagerComponent "{645A0008F3808301}" {
+    additionalActions {
+     CRF_TeleportPlayerAction "{645A0008F88C720A}" {
+      UIInfo UIInfo "{645A000816F0F771}" {
+       Name "Teleport To AO 1"
+      }
+      m_sObjectNameToTeleportTo "red1"
+     }
+     CRF_TeleportPlayerAction "{6A50FAF270F0C05F}" {
+      ParentContextList {
+       "default"
+      }
+      UIInfo UIInfo "{6A50FAF2749675D0}" {
+       Name "Teleport to AO 2"
+      }
+      ActionTitle "Teleport"
+      VisibilityRange 5
+      Duration 2.5
+      m_sObjectNameToTeleportTo "red2"
+     }
+     CRF_TeleportPlayerAction "{6A50FAF24B9BDAC1}" {
+      ParentContextList {
+       "default"
+      }
+      UIInfo UIInfo "{6A50FAF24D708692}" {
+       Name "Teleport to AO 3"
+      }
+      ActionTitle "Teleport"
+      VisibilityRange 5
+      Duration 2.5
+      m_sObjectNameToTeleportTo "red3"
+     }
+    }
+   }
+  }
+  coords 10193.018 216.469 4318.081
+ }
+ red3 {
+  components {
+   ActionsManagerComponent "{645A0008F3808301}" {
+    additionalActions {
+     CRF_TeleportPlayerAction "{645A0008F88C720A}" {
+      UIInfo UIInfo "{645A000816F0F771}" {
+       Name "Teleport To AO 1"
+      }
+      m_sObjectNameToTeleportTo "red1"
+     }
+     CRF_TeleportPlayerAction "{6A50FAF270F0C05F}" {
+      ParentContextList {
+       "default"
+      }
+      UIInfo UIInfo "{6A50FAF2749675D0}" {
+       Name "Teleport to AO 2"
+      }
+      ActionTitle "Teleport"
+      VisibilityRange 5
+      Duration 2.5
+      m_sObjectNameToTeleportTo "red2"
+     }
+     CRF_TeleportPlayerAction "{6A50FAF24B9BDAC1}" {
+      ParentContextList {
+       "default"
+      }
+      UIInfo UIInfo "{6A50FAF24D708692}" {
+       Name "Teleport to AO 3"
+      }
+      ActionTitle "Teleport"
+      VisibilityRange 5
+      Duration 2.5
+      m_sObjectNameToTeleportTo "red3"
+     }
+    }
+   }
+  }
+  coords 9528.052 120.055 9131.715
  }
 }
