@@ -42,11 +42,12 @@ class CRF_ParachutePlayerComponent : ScriptComponent
 	protected const int MAX_RESOLVE_RETRIES = 20;
 	protected const int MAX_ENTER_RETRIES = 20;
 	protected const int MAX_OWNERSHIP_RETRIES = 20;
+	protected const int MAX_OCCUPANCY_RETRIES = 20;
 	protected int m_ResolveRetries;
 	protected int m_EnterRetries;
 	protected int m_OwnershipRetries;
+	protected int m_OccupancyRetries;
 
-	// Client-side input debounce
 	protected bool m_DeployRequestPending = false;
 	protected const int DEPLOY_REQUEST_COOLDOWN_MS = 1000;
 
@@ -273,7 +274,6 @@ class CRF_ParachutePlayerComponent : ScriptComponent
 
 	void OnJumpPressed()
 	{
-		// Debounce
 		if (m_DeployRequestPending || m_IsDeployed)
 			return;
 
@@ -289,6 +289,7 @@ class CRF_ParachutePlayerComponent : ScriptComponent
 			return;
 
 		m_DeployRequestPending = true;
+
 		GetGame().GetCallqueue().CallLater(ClearDeployRequestPending, DEPLOY_REQUEST_COOLDOWN_MS, false);
 
 		if (IsAuthority())
@@ -431,6 +432,8 @@ class CRF_ParachutePlayerComponent : ScriptComponent
 
 	void OnDeployStateChanged()
 	{
+		// Authoritative confirmation received from the server; release the
+		// input debounce regardless of deployed/cleared state.
 		m_DeployRequestPending = false;
 
 		if (!GetGame().InPlayMode())
@@ -601,8 +604,59 @@ class CRF_ParachutePlayerComponent : ScriptComponent
 			return;
 		}
 
-		m_OwnershipRetries = 0;
-		WaitForChuteOwnership();
+
+		m_OccupancyRetries = 0;
+		VerifyChuteOccupancy();
+	}
+
+	protected bool IsCharacterSeatedInChute(IEntity character)
+	{
+		if (!m_DeployedChuteEntity || !character)
+			return false;
+
+		BaseCompartmentManagerComponent bcm = BaseCompartmentManagerComponent.Cast(m_DeployedChuteEntity.FindComponent(BaseCompartmentManagerComponent));
+		if (!bcm)
+			return false;
+
+		BaseCompartmentSlot slot = bcm.FindCompartment(m_ChuteSlotId);
+		if (!slot)
+			return false;
+
+		return slot.IsOccupied() && slot.GetOccupant() == character;
+	}
+
+	protected void VerifyChuteOccupancy()
+	{
+		if (!GetGame().InPlayMode() || !m_DeployedChuteEntity || m_ChuteSlotId < 0)
+			return;
+
+		IEntity character = GetControlledCharacter();
+		if (!character)
+			return;
+
+		if (IsCharacterSeatedInChute(character))
+		{
+			m_OwnershipRetries = 0;
+			WaitForChuteOwnership();
+			return;
+		}
+
+		if (m_OccupancyRetries < MAX_OCCUPANCY_RETRIES)
+		{
+			m_OccupancyRetries++;
+			GetGame().GetCallqueue().CallLater(VerifyChuteOccupancy, 50, false);
+			return;
+		}
+
+		if (m_EnterRetries < MAX_ENTER_RETRIES)
+		{
+			m_EnterRetries++;
+			RetryEnterChute();
+		}
+		else
+		{
+			AbortStuckDeployment("compartment slot never actually became occupied after GetInVehicle reported success");
+		}
 	}
 
 	protected void RetryEnterChute()
@@ -616,6 +670,19 @@ class CRF_ParachutePlayerComponent : ScriptComponent
 			return;
 		if (IsChuteOwner())
 		{
+			IEntity character = GetControlledCharacter();
+			if (IsCharacterSeatedInChute(character))
+				return;
+
+			if (m_OccupancyRetries < MAX_OCCUPANCY_RETRIES)
+			{
+				m_OccupancyRetries++;
+				GetGame().GetCallqueue().CallLater(WaitForChuteOwnership, 50, false);
+			}
+			else
+			{
+				AbortStuckDeployment("chute ownership confirmed but pilot was never actually seated");
+			}
 			return;
 		}
 		if (m_OwnershipRetries < MAX_OWNERSHIP_RETRIES)
