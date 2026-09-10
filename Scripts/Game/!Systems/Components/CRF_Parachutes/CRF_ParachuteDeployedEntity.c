@@ -53,11 +53,11 @@ class CRF_ParachuteDeployedEntity : GenericEntity
 	protected float m_DragStrength = 2.0;
 
 	// Steering settings
-	[Attribute("60", UIWidgets.Slider, "Pitch torque", "1 200 1", category: "Steering")]
-	protected float m_PitchTorque = 60.0;
+	[Attribute("35", UIWidgets.Slider, "Pitch torque", "1 200 1", category: "Steering")]
+	protected float m_PitchTorque = 35.0;
 
-	[Attribute("60", UIWidgets.Slider, "Roll torque", "1 200 1", category: "Steering")]
-	protected float m_RollTorque = 60.0;
+	[Attribute("25", UIWidgets.Slider, "Roll torque", "1 200 1", category: "Steering")]
+	protected float m_RollTorque = 25.0;
 
 	[Attribute("200", UIWidgets.Slider, "Auto-level proportional gain", "0 500 1", category: "Steering")]
 	protected float m_LevelPropGain = 200.0;
@@ -68,8 +68,8 @@ class CRF_ParachuteDeployedEntity : GenericEntity
 	[Attribute("2", UIWidgets.Slider, "Auto-level power", "0.1 3.0 0.1", category: "Steering")]
 	protected float m_LevelPower = 2.0;
 
-	[Attribute("45", UIWidgets.Slider, "Max turn rate (deg/s)", "0 90 1", category: "Steering")]
-	protected float m_MaxTurnRate = 45.0;
+	[Attribute("25", UIWidgets.Slider, "Max turn rate (deg/s)", "0 90 1", category: "Steering")]
+	protected float m_MaxTurnRate = 25.0;
 
 	[Attribute("4.0", UIWidgets.Slider, "Turn proportional gain", "0 20 0.1", category: "Steering")]
 	protected float m_TurnPropGain = 4.0;
@@ -79,9 +79,6 @@ class CRF_ParachuteDeployedEntity : GenericEntity
 
 	[Attribute("8", UIWidgets.Slider, "Min bank angle to turn (deg)", "0 45 1", category: "Steering")]
 	protected float m_MinBankAngle = 8.0;
-
-	[Attribute("0.1", UIWidgets.Slider, "Min pitch input to turn", "0 1 0.01", category: "Steering")]
-	protected float m_MinPitchInput = 0.1;
 
 	[Attribute("4.0", UIWidgets.Slider, "Glide accel, pitch down", "0 20 0.1", category: "Steering")]
 	protected float m_GlideDownPitch = 4.0;
@@ -113,6 +110,9 @@ class CRF_ParachuteDeployedEntity : GenericEntity
 
 	[Attribute("10.0", UIWidgets.Slider, "Max flare deceleration (m/s²)", "0 30 0.5")]
 	protected float m_MaxFlareDeceleration = 10.0;
+
+	[Attribute("6.0", UIWidgets.Slider, "Max horizontal flare deceleration (m/s²)", "0 30 0.5")]
+	protected float m_MaxHorizontalFlareDeceleration = 6.0;
 
 	[Attribute("0.5", UIWidgets.Slider, "Ground detection extra offset (m)", "0 2 0.1")]
 	protected float m_GroundCheckOffset = 0.5;
@@ -252,11 +252,9 @@ class CRF_ParachuteDeployedEntity : GenericEntity
 		if (m_HasLanded || !m_Physics)
 			return;
 
-
 		if (!IsAuthority() && !IsOwner())
 			return;
 
-		// Hold the canopy stationary until the pilot is actually seated.
 		if (!m_Released)
 		{
 			if (!m_CargoSlot || m_CargoSlot.IsOccupied())
@@ -443,10 +441,36 @@ class CRF_ParachuteDeployedEntity : GenericEntity
 		float t = 1.0 - (height - m_FlareEndHeight) / (m_FlareStartHeight - m_FlareEndHeight);
 		t = Math.Clamp(t, 0.0, 1.0);
 
-		// Apply upward impulse to kill downward velocity
-		float decel = t * m_MaxFlareDeceleration;
-		float impulse = decel * m_Physics.GetMass() * timeSlice;
-		m_Physics.ApplyImpulse(vector.Up * impulse);
+		float downwardSpeed = -m_Physics.GetVelocity()[1];
+		if (downwardSpeed > 0.0)
+		{
+			float decel = t * m_MaxFlareDeceleration;
+			float maxDecelThisTick = downwardSpeed / Math.Max(timeSlice, 0.0001);
+			decel = Math.Min(decel, maxDecelThisTick);
+
+			float impulse = decel * m_Physics.GetMass() * timeSlice;
+			m_Physics.ApplyImpulse(vector.Up * impulse);
+		}
+
+		if (m_MaxHorizontalFlareDeceleration > 0.0 && m_fForwardSpeed > m_MinForwardSpeed)
+		{
+			float horizDecel = t * m_MaxHorizontalFlareDeceleration;
+			float speedLoss = horizDecel * timeSlice;
+			m_fForwardSpeed = Math.Max(m_fForwardSpeed - speedLoss, m_MinForwardSpeed);
+
+			vector curVel = m_Physics.GetVelocity();
+			vector horizVel = curVel;
+			horizVel[1] = 0;
+			float horizLen = horizVel.Length();
+			if (horizLen > 0.01)
+			{
+				vector horizDir = horizVel / horizLen;
+				vector newHorizVel = horizDir * m_fForwardSpeed;
+				vector newVel = {newHorizVel[0], curVel[1], newHorizVel[2]};
+				m_Physics.SetVelocity(newVel);
+				m_vVelocity = newVel;
+			}
+		}
 	}
 
 	// --------------------------------------------------------------------------------------------
@@ -469,7 +493,9 @@ class CRF_ParachuteDeployedEntity : GenericEntity
 		m_Physics.ApplyTorque(axisWorld * torque);
 	}
 
-	// Converts bank angle + forward pull into a yaw rate, so banking the canopy turns it
+	// Converts bank angle into a yaw rate, so banking the canopy (roll
+	// input) turns it on its own - forward glide speed is driven
+	// independently by HandleGlide/pitch input and isn't required to turn.
 	void HandleBankTurn(float timeSlice)
 	{
 		vector ang = Math3D.MatrixToAngles(m_vWorldTransform);
@@ -477,12 +503,9 @@ class CRF_ParachuteDeployedEntity : GenericEntity
 
 		if (Math.AbsFloat(rollDeg) < m_MinBankAngle)
 			return;
-		if (m_fInputPitch < m_MinPitchInput)
-			return;
 
 		float bankFactor = Math.Sin(rollDeg * Math.DEG2RAD);
-		float pitchFactor = Math.Clamp(m_fInputPitch, 0, 1);
-		float yawRateDes = bankFactor * pitchFactor * m_MaxTurnRate;
+		float yawRateDes = bankFactor * m_MaxTurnRate;
 
 		vector yawAxisWorld = VectorToParent(vector.Up);
 		float yawRateCur = vector.Dot(m_vAngularVelocity, yawAxisWorld) * Math.RAD2DEG;
