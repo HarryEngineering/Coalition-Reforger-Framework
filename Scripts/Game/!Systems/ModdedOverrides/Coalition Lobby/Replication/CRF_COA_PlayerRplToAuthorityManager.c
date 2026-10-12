@@ -274,6 +274,82 @@ modded class COA_PlayerRplToAuthorityManager : ScriptComponent
 	}
 
 	//------------------------------------------------------------------------------------------------
+	//! AAR screen: join (recreating if needed) the caller's group voice channel
+	void RequestGroupVoiceChannel()
+	{
+		Rpc(RpcAsk_RequestGroupVoiceChannel);
+	}
+
+	//------------------------------------------------------------------------------------------------
+	[RplRpc(RplChannel.Reliable, RplRcver.Server)]
+	protected void RpcAsk_RequestGroupVoiceChannel()
+	{
+		LogTelemetry("RpcAsk_RequestGroupVoiceChannel", 0);
+
+		if (!m_Gamemode || m_Gamemode.m_GamemodeState != COA_EGamemodeState.AAR)
+			return;
+
+		CRF_AARManager.GetInstance().OpenGroupChannel(GetCallerPlayerId());
+	}
+
+	//------------------------------------------------------------------------------------------------
+	//! AAR form: ask for this player's saved review and the leaders they can rate
+	void RequestAARReviewForm()
+	{
+		Rpc(RpcAsk_RequestAARReviewForm);
+	}
+
+	//------------------------------------------------------------------------------------------------
+	[RplRpc(RplChannel.Reliable, RplRcver.Server)]
+	protected void RpcAsk_RequestAARReviewForm()
+	{
+		LogTelemetry("RpcAsk_RequestAARReviewForm", 0);
+
+		if (!m_Gamemode || m_Gamemode.m_GamemodeState != COA_EGamemodeState.AAR)
+			return;
+
+		CRF_AARManager.GetInstance().LoadReviewForm(GetCallerPlayerId());
+	}
+
+	//------------------------------------------------------------------------------------------------
+	//! AAR form: the player's written review (packed by CRF_AARReviewData.Pack), posted to the website
+	void SubmitAARReview(array<string> strings, array<int> ints)
+	{
+		Rpc(RpcAsk_SubmitAARReview, strings, ints);
+	}
+
+	//------------------------------------------------------------------------------------------------
+	[RplRpc(RplChannel.Reliable, RplRcver.Server)]
+	protected void RpcAsk_SubmitAARReview(array<string> strings, array<int> ints)
+	{
+		LogTelemetry("RpcAsk_SubmitAARReview", COA_BandwidthTelemetryManager.EstimateSize_StringArray(strings) + COA_BandwidthTelemetryManager.EstimateSize_IntArray(ints));
+
+		if (!m_Gamemode || m_Gamemode.m_GamemodeState != COA_EGamemodeState.AAR)
+			return;
+
+		CRF_AARManager.GetInstance().SubmitReview(GetCallerPlayerId(), CRF_AARReviewData.Unpack(strings, ints));
+	}
+
+	//------------------------------------------------------------------------------------------------
+	//! AAR screen: the local player's 1-5 rating of the round, forwarded to the website
+	void SubmitMissionRating(int rating)
+	{
+		Rpc(RpcAsk_SubmitMissionRating, rating);
+	}
+
+	//------------------------------------------------------------------------------------------------
+	[RplRpc(RplChannel.Reliable, RplRcver.Server)]
+	protected void RpcAsk_SubmitMissionRating(int rating)
+	{
+		LogTelemetry("RpcAsk_SubmitMissionRating", COA_BandwidthTelemetryManager.EstimateSize_Int());
+
+		if (!m_Gamemode || m_Gamemode.m_GamemodeState != COA_EGamemodeState.AAR)
+			return;
+
+		CRF_AARManager.GetInstance().SubmitRating(GetCallerPlayerId(), rating);
+	}
+
+	//------------------------------------------------------------------------------------------------
 	//! Game Master player list: move the caller's editor camera to a player the caller's client has
 	//! not streamed in (see CRF_ZeusPlayerList.FocusCameraOnPlayer)
 	void RequestZeusCameraToPlayer(int targetPlayerId)
@@ -324,6 +400,112 @@ modded class COA_PlayerRplToAuthorityManager : ScriptComponent
 			return;
 
 		ownerManager.ReceiveZeusTicketHolders(adminMenuManager.GetOpenTickets());
+	}
+
+	//------------------------------------------------------------------------------------------------
+	//! Game Master player list quick action: move a player to the Game Master's camera position
+	void RequestZeusTeleportPlayer(int targetPlayerId, vector position)
+	{
+		Rpc(RpcAsk_RequestZeusTeleportPlayer, targetPlayerId, position);
+	}
+
+	//------------------------------------------------------------------------------------------------
+	[RplRpc(RplChannel.Reliable, RplRcver.Server)]
+	protected void RpcAsk_RequestZeusTeleportPlayer(int targetPlayerId, vector position)
+	{
+		LogTelemetry("RpcAsk_RequestZeusTeleportPlayer", COA_BandwidthTelemetryManager.EstimateSize_Int() + COA_BandwidthTelemetryManager.EstimateSize_Vector());
+
+		if (!GetCallerZeusMode() || !SCR_Global.IsPositionWithinTerrainBounds(position))
+			return;
+
+		IEntity target = GetGame().GetPlayerManager().GetPlayerControlledEntity(targetPlayerId);
+		if (!target || COA_EntityHelper.IsSpectator(target))
+			return;
+
+		// In a vehicle the whole vehicle moves, which only the server can do; on foot the player's
+		// own client moves the character (same split as the vanilla editor's player teleport)
+		if (target.GetRootParent() != target)
+			SCR_Global.TeleportPlayer(targetPlayerId, position, SCR_EPlayerTeleportedReason.FAST_TRAVEL);
+		else
+			m_RplBroadcastManager.TeleportPlayerToPosition(targetPlayerId, position);
+
+		LogZeusAction(string.Format("%1 teleported %2 to their camera", GetCallerName(), GetGame().GetPlayerManager().GetPlayerName(targetPlayerId)), targetPlayerId);
+	}
+
+	//------------------------------------------------------------------------------------------------
+	//! Game Master player list quick action: fully heal a player
+	void RequestZeusHeal(int targetPlayerId)
+	{
+		Rpc(RpcAsk_RequestZeusHeal, targetPlayerId);
+	}
+
+	//------------------------------------------------------------------------------------------------
+	[RplRpc(RplChannel.Reliable, RplRcver.Server)]
+	protected void RpcAsk_RequestZeusHeal(int targetPlayerId)
+	{
+		LogTelemetry("RpcAsk_RequestZeusHeal", COA_BandwidthTelemetryManager.EstimateSize_Int());
+
+		if (!GetCallerZeusMode())
+			return;
+
+		IEntity target = GetGame().GetPlayerManager().GetPlayerControlledEntity(targetPlayerId);
+		if (!target)
+			return;
+
+		SCR_DamageManagerComponent damageComponent = SCR_DamageManagerComponent.Cast(target.FindComponent(SCR_DamageManagerComponent));
+		if (!damageComponent)
+			return;
+
+		damageComponent.FullHeal();
+		damageComponent.SetHealthScaled(1);
+
+		LogZeusAction(string.Format("%1 healed %2", GetCallerName(), GetGame().GetPlayerManager().GetPlayerName(targetPlayerId)), targetPlayerId);
+	}
+
+	//------------------------------------------------------------------------------------------------
+	//! Game Master player list quick action: take a player out of their slot and put them in
+	//! spectator. Their body is removed and the slot opens up again.
+	void RequestZeusSendToSpectator(int targetPlayerId)
+	{
+		Rpc(RpcAsk_RequestZeusSendToSpectator, targetPlayerId);
+	}
+
+	//------------------------------------------------------------------------------------------------
+	[RplRpc(RplChannel.Reliable, RplRcver.Server)]
+	protected void RpcAsk_RequestZeusSendToSpectator(int targetPlayerId)
+	{
+		LogTelemetry("RpcAsk_RequestZeusSendToSpectator", COA_BandwidthTelemetryManager.EstimateSize_Int());
+
+		if (!GetCallerZeusMode() || !m_SlottingManager || !m_Gamemode)
+			return;
+
+		// Not for other Game Masters / admins
+		if (SCR_Global.IsAdmin(targetPlayerId))
+			return;
+
+		int slotId = m_SlottingManager.GetPlayerSlotID(targetPlayerId);
+		if (slotId < 0)
+			return;
+
+		// Vacating the slot deletes its character (COA_SlotData.SetSlotCurrentPlayerId -> CleanupCharacterFromSlot)
+		m_SlottingManager.UpdateSlotPlayerID(slotId, 0);
+		m_Gamemode.QueuePlayerInitialization(targetPlayerId, false);
+
+		m_RplBroadcastManager.SendHint("A Game Master has moved you to spectator.", targetPlayerId);
+		LogZeusAction(string.Format("%1 sent %2 to spectator", GetCallerName(), GetGame().GetPlayerManager().GetPlayerName(targetPlayerId)), targetPlayerId);
+	}
+
+	//------------------------------------------------------------------------------------------------
+	protected string GetCallerName()
+	{
+		return GetGame().GetPlayerManager().GetPlayerName(GetCallerPlayerId());
+	}
+
+	//------------------------------------------------------------------------------------------------
+	protected void LogZeusAction(string message, int targetPlayerId)
+	{
+		if (m_RplBroadcastManager)
+			m_RplBroadcastManager.LogAdminAction(message, targetPlayerId, false, COA_EAdminLogLevel.Medium);
 	}
 
 	//------------------------------------------------------------------------------------------------
@@ -823,6 +1005,54 @@ modded class COA_PlayerRplToAuthorityManager : ScriptComponent
 	}
 
 	//------------------------------------------------------------------------------------------------
+	// Mini arsenal request validation (see CRF_MiniArsenalCatalog). The client lists are only a
+	// convenience: the server checks the request against the faction gear script for the caller role,
+	// that the arsenal is open (safe start or respawn grace period), and a per-player cooldown.
+	protected float m_fMiniArsenalNextRequest;
+
+	//------------------------------------------------------------------------------------------------
+	//! \return the caller gear script if they may use the mini arsenal right now, else null
+	protected COA_GearScriptConfig GetMiniArsenalConfig(int playerId, bool forWeapon, out COA_EGearRole role)
+	{
+		IEntity player = GetGame().GetPlayerManager().GetPlayerControlledEntity(playerId);
+		Faction faction = SCR_FactionManager.SGetPlayerFaction(playerId);
+		if (!player || !player.GetPrefabData() || !faction || !m_Gamemode)
+			return null;
+
+		COA_GearScriptContainer container = m_Gamemode.GetGearScriptSettings(faction.GetFactionKey());
+		if (!container || !container.m_bEnableMiniArsenal || (forWeapon && !container.m_bEnableMiniWeaponArsenal))
+			return null;
+
+		COA_SafestartManager safestart = COA_SafestartManager.GetInstance();
+		bool open = (safestart && safestart.GetSafestartStatus()) || !COA_PlayerController.IsGracePeriodOverForPlayer(playerId);
+		if (!open)
+		{
+			if (m_RplBroadcastManager)
+				m_RplBroadcastManager.SendHint("The mini arsenal is only available during safe start.", playerId);
+			return null;
+		}
+
+		float now = GetGame().GetWorld().GetWorldTime();
+		if (now < m_fMiniArsenalNextRequest)
+			return null;
+		m_fMiniArsenalNextRequest = now + CRF_MiniArsenalCatalog.REQUEST_COOLDOWN_MS;
+
+		role = COA_RoleHelper.ResourceToRole(player.GetPrefabData().GetPrefabName());
+		return CRF_MiniArsenalCatalog.GetConfig(faction.GetFactionKey());
+	}
+
+	//------------------------------------------------------------------------------------------------
+	protected void ReportMiniArsenalViolation(int playerId, string what)
+	{
+		string message = string.Format("%1 requested %2 from the mini arsenal, which is not in the gear list for their role - request ignored",
+			GetGame().GetPlayerManager().GetPlayerName(playerId), what);
+		Print("[CRF] " + message, LogLevel.WARNING);
+		COA_RplBroadcastManager broadcastManager = COA_RplBroadcastManager.GetInstance();
+		if (broadcastManager)
+			broadcastManager.LogAdminAction(message, playerId, false, COA_EAdminLogLevel.High);
+	}
+
+	//------------------------------------------------------------------------------------------------
 	[RplRpc(RplChannel.Reliable, RplRcver.Server)]
 	protected void RpcAsk_MiniArsenalRequestNewItem(int playerId, string newResource, int slotId)
 	{
@@ -832,6 +1062,17 @@ modded class COA_PlayerRplToAuthorityManager : ScriptComponent
 		int bytes = COA_BandwidthTelemetryManager.EstimateSize_Int() * 2;
 		bytes += COA_BandwidthTelemetryManager.EstimateSize_String(newResource);
 		LogTelemetry("RpcAsk_MiniArsenalRequestNewItem", bytes);
+
+		COA_EGearRole arsenalRole;
+		COA_GearScriptConfig arsenalConfig = GetMiniArsenalConfig(playerId, false, arsenalRole);
+		if (!arsenalConfig)
+			return;
+
+		if (!CRF_MiniArsenalCatalog.IsClothingAllowed(arsenalConfig, arsenalRole, slotId, newResource))
+		{
+			ReportMiniArsenalViolation(playerId, newResource);
+			return;
+		}
 		
 		IEntity player = GetGame().GetPlayerManager().GetPlayerControlledEntity(playerId);
 		if (!player)
@@ -1018,6 +1259,39 @@ modded class COA_PlayerRplToAuthorityManager : ScriptComponent
 		bytes += COA_BandwidthTelemetryManager.EstimateSize_IntArray(magazineCounts);
 		bytes += COA_BandwidthTelemetryManager.EstimateSize_Bool();
 		LogTelemetry("RpcAsk_MiniArsenalRequestNewWeapon", bytes);
+
+		COA_EGearRole arsenalRole;
+		COA_GearScriptConfig arsenalConfig = GetMiniArsenalConfig(playerId, true, arsenalRole);
+		if (!arsenalConfig)
+			return;
+
+		// The weapon must be in the role list; attachments, magazines and the slot come from the gear
+		// script entry, never from the client
+		COA_Weapon_Class allowedWeapon = CRF_MiniArsenalCatalog.FindAllowedWeapon(arsenalConfig, arsenalRole, newWeaponResource, isPistol);
+		if (!allowedWeapon)
+		{
+			ReportMiniArsenalViolation(playerId, newWeaponResource);
+			return;
+		}
+
+		// Refill the received arrays in place (parameters aren't strong refs, so they can't be reassigned)
+		attachments.Clear();
+		if (allowedWeapon.m_Attachments)
+		{
+			foreach (ResourceName allowedAttachment : allowedWeapon.m_Attachments)
+				attachments.Insert(allowedAttachment);
+		}
+
+		magazines.Clear();
+		magazineCounts.Clear();
+		if (allowedWeapon.m_MagazineArray)
+		{
+			foreach (COA_Magazine_Class allowedMagazine : allowedWeapon.m_MagazineArray)
+			{
+				magazines.Insert(allowedMagazine.m_Magazine);
+				magazineCounts.Insert(allowedMagazine.m_MagazineCount);
+			}
+		}
 		
 		IEntity player = GetGame().GetPlayerManager().GetPlayerControlledEntity(playerId);
 		if (!player || !player.GetPrefabData())

@@ -5,6 +5,7 @@
 //  - looks up this round's coalitiongroup.net/aar/<id> page from the website backend
 //  - sends every map marker, of every faction, to each client that opens the AAR screen
 //    (clients normally discard other factions' markers - see SCR_MapMarkerManagerComponent)
+//  - forwards players' 1-5 ratings of the round to the website (needs CRF_WebsiteApiConfig)
 //------------------------------------------------------------------------------------------------
 class CRF_AARManager
 {
@@ -15,6 +16,12 @@ class CRF_AARManager
 	protected static const string CURRENT_MISSION_ENDPOINT = "api/game/current-mission?name=";
 	protected static const int LOOKUP_RETRY_MS = 15000;
 	protected static const int LOOKUP_MAX_ATTEMPTS = 4;
+	protected static const string MISSION_RATING_ENDPOINT = "api/game/mission-rating";
+	protected static const string AAR_REVIEW_ENDPOINT = "api/game/aar-review";
+	// Written AAR: form loads and submissions per player, not faster than this
+	protected static const int REVIEW_COOLDOWN_MS = 4000;
+	// A player can change their rating, but not faster than this
+	protected static const int RATING_COOLDOWN_MS = 2000;
 
 	// Markers are streamed in small batches so a full map doesn't arrive as one burst of RPCs
 	protected static const int MARKERS_PER_BATCH = 10;
@@ -27,6 +34,16 @@ class CRF_AARManager
 	// playerId -> marker IDs still to send to that player
 	protected ref map<int, ref array<int>> m_mPendingMarkers = new map<int, ref array<int>>();
 	protected ref set<int> m_sPlayersServed = new set<int>();
+
+	// Rating requests waiting on the website, and each player's last submission time (world ms)
+	protected ref array<ref CRF_MissionRatingRequest> m_aRatingRequests = {};
+	protected ref map<int, int> m_mLastRatingTime = new map<int, int>();
+	protected bool m_bWarnedMissingKey;
+
+	// Written AAR requests waiting on the website, and each player's last form load / submission (world ms)
+	protected ref array<ref CRF_AARReviewRequest> m_aReviewRequests = {};
+	protected ref map<int, int> m_mLastReviewFormTime = new map<int, int>();
+	protected ref map<int, int> m_mLastReviewSubmitTime = new map<int, int>();
 
 	//------------------------------------------------------------------------------------------------
 	static CRF_AARManager GetInstance()
@@ -44,6 +61,11 @@ class CRF_AARManager
 		if (s_Instance)
 			s_Instance.Cleanup();
 
+		// Side channels only exist for the AAR
+		COA_MenuManager menuManager = COA_MenuManager.GetInstance();
+		if (menuManager)
+			menuManager.RemoveFactionChannels();
+
 		s_Instance = null;
 	}
 
@@ -54,6 +76,9 @@ class CRF_AARManager
 		GetGame().GetCallqueue().Remove(SendMarkerBatch);
 		m_mPendingMarkers.Clear();
 		m_sPlayersServed.Clear();
+		m_mLastRatingTime.Clear();
+		m_mLastReviewFormTime.Clear();
+		m_mLastReviewSubmitTime.Clear();
 	}
 
 	//------------------------------------------------------------------------------------------------
@@ -94,8 +119,9 @@ class CRF_AARManager
 //=============================================================================================================================================================================================================================================================================================================================================================
 
 	//------------------------------------------------------------------------------------------------
-	//! One channel per group, in slotting (ORBAT) order, each holding that group's connected players.
-	//! Unslotted players and spectators stay in Global.
+	//! One channel per group, in slotting (ORBAT) order, each holding that group's connected players,
+	//! plus an empty side channel per faction that had players (listed under Global, joinable only by
+	//! that faction). Unslotted players and spectators stay in Global.
 	protected void BuildGroupVoiceChannels()
 	{
 		COA_MenuManager menuManager = COA_MenuManager.GetInstance();
@@ -108,6 +134,7 @@ class CRF_AARManager
 
 		array<string> channelNames = {};
 		array<ref array<int>> channelPlayers = {};
+		array<FactionKey> sideChannelFactions = {};
 
 		array<string> factionKeys = {"BLUFOR", "OPFOR", "INDFOR", "CIV"};
 		foreach (string factionKey : factionKeys)
@@ -131,13 +158,58 @@ class CRF_AARManager
 				if (members.IsEmpty())
 					continue;
 
-				channelNames.Insert(string.Format("%1 - %2", factionKey, group.GetCustomNameWithOriginal()));
+				if (!sideChannelFactions.Contains(factionKey))
+					sideChannelFactions.Insert(factionKey);
+
+				channelNames.Insert(GetGroupChannelName(factionKey, group));
 				channelPlayers.Insert(members);
 			}
 		}
 
-		menuManager.SetAllChannels(channelNames, channelPlayers);
-		Print(string.Format("[CRF_AARManager] Created %1 AAR group voice channel(s)", channelNames.Count()), LogLevel.NORMAL);
+		menuManager.SetAllChannels(channelNames, channelPlayers, sideChannelFactions);
+		Print(string.Format("[CRF_AARManager] Created %1 AAR group voice channel(s) and %2 side channel(s)", channelNames.Count(), sideChannelFactions.Count()), LogLevel.NORMAL);
+	}
+
+	//------------------------------------------------------------------------------------------------
+	//! Name of a group's AAR voice channel, exactly as stored in COA_MenuManager.m_aVONChannels.
+	//! Also used by the AAR screen to tell whether the local player's group channel still exists.
+	static string GetGroupChannelName(FactionKey factionKey, SCR_AIGroup group)
+	{
+		return COA_MenuManager.SanitizeChannelName(string.Format("%1 - %2", factionKey, group.GetCustomNameWithOriginal()));
+	}
+
+	//------------------------------------------------------------------------------------------------
+	//! Server: put a player in their group's AAR channel, recreating it if everyone had left (empty
+	//! channels are removed automatically). Players can only open their own group's channel.
+	void OpenGroupChannel(int playerId)
+	{
+		COA_MenuManager menuManager = COA_MenuManager.GetInstance();
+		COA_SlottingManager slottingManager = COA_SlottingManager.GetInstance();
+		if (!menuManager || !slottingManager)
+			return;
+
+		Faction faction = slottingManager.GetPlayerSlotFaction(playerId, true);
+		SCR_AIGroup group = slottingManager.GetPlayerSlotGroup(playerId);
+		if (!faction || !group)
+			return;
+
+		string channelName = GetGroupChannelName(faction.GetFactionKey(), group);
+
+		// Someone may have reopened it already
+		foreach (int channelIndex, string channelData : menuManager.m_aVONChannels)
+		{
+			array<string> channelParts = {};
+			channelData.Split("|", channelParts, true);
+			if (channelParts.IsEmpty() || channelParts[0] != channelName)
+				continue;
+
+			if (menuManager.GetChannel(playerId) != channelIndex)
+				menuManager.AddPlayerToChannel(playerId, channelIndex, false);
+
+			return;
+		}
+
+		menuManager.CreateChannel(channelName, playerId);
 	}
 
 //=============================================================================================================================================================================================================================================================================================================================================================
@@ -257,6 +329,398 @@ class CRF_AARManager
 	}
 
 //=============================================================================================================================================================================================================================================================================================================================================================
+//	 MISSION RATING
+//=============================================================================================================================================================================================================================================================================================================================================================
+
+	//------------------------------------------------------------------------------------------------
+	//! Server: a player rated the round 1-5 on the AAR screen. Posted to the website against this
+	//! round's mission ID; the player is told whether it was saved.
+	void SubmitRating(int playerId, int rating)
+	{
+		COA_PlayerRplToOwnerManager ownerManager = COA_PlayerRplToOwnerManager.GetForPlayer(playerId);
+		if (!ownerManager)
+			return;
+
+		int now = GetGame().GetWorld().GetWorldTime();
+		int lastRating;
+		bool onCooldown = m_mLastRatingTime.Find(playerId, lastRating) && now - lastRating < RATING_COOLDOWN_MS;
+
+		if (rating < 1 || rating > 5 || m_iMissionId <= 0 || onCooldown)
+		{
+			ownerManager.ReceiveMissionRatingResult(rating, false);
+			return;
+		}
+
+		string key = CRF_WebsiteApiConfig.GetGameServerKey();
+		RestApi rest = GetGame().GetRestApi();
+		if (key.IsEmpty() || !rest)
+		{
+			if (!m_bWarnedMissingKey)
+			{
+				m_bWarnedMissingKey = true;
+				Print("[CRF_AARManager] No gameServerKey in $profile:CRF_WebsiteApiConfig.json - mission ratings are not sent", LogLevel.WARNING);
+			}
+
+			ownerManager.ReceiveMissionRatingResult(rating, false);
+			return;
+		}
+
+		RestContext context = rest.GetContext(API_BASE_URL);
+		if (!context)
+			return;
+
+		m_mLastRatingTime.Set(playerId, now);
+
+		string guid = SCR_PlayerIdentityUtils.GetPlayerIdentityId(playerId);
+		string playerName = GetGame().GetPlayerManager().GetPlayerName(playerId);
+		string payload = string.Format("{\"missionId\":%1,\"guid\":\"%2\",\"name\":\"%3\",\"rating\":%4}",
+			m_iMissionId, EscapeJsonString(guid), EscapeJsonString(playerName), rating);
+
+		CRF_MissionRatingRequest request = new CRF_MissionRatingRequest(this, playerId, rating);
+		m_aRatingRequests.Insert(request);
+
+		context.SetHeaders("Content-Type,application/json,x-game-server-key," + key);
+		context.POST(request.m_Callback, MISSION_RATING_ENDPOINT, payload);
+	}
+
+	//------------------------------------------------------------------------------------------------
+	//! Called by CRF_MissionRatingRequest when the website answers (or the request fails)
+	void OnRatingRequestFinished(CRF_MissionRatingRequest request, bool saved)
+	{
+		COA_PlayerRplToOwnerManager ownerManager = COA_PlayerRplToOwnerManager.GetForPlayer(request.m_iPlayerId);
+		if (ownerManager)
+			ownerManager.ReceiveMissionRatingResult(request.m_iRating, saved);
+
+		if (!saved)
+			Print(string.Format("[CRF_AARManager] Website rejected mission rating from player %1 (HTTP %2)", request.m_iPlayerId, request.m_Callback.GetHttpCode()), LogLevel.WARNING);
+
+		m_aRatingRequests.RemoveItem(request);
+	}
+
+	//------------------------------------------------------------------------------------------------
+	protected static string EscapeJsonString(string value)
+	{
+		string escaped = value;
+		escaped.Replace("\\", "\\\\");
+		escaped.Replace("\"", "\\\"");
+		return escaped;
+	}
+
+//=============================================================================================================================================================================================================================================================================================================================================================
+//	 WRITTEN AAR REVIEW
+//=============================================================================================================================================================================================================================================================================================================================================================
+
+	//------------------------------------------------------------------------------------------------
+	//! Server: a player opened the AAR form - send them their saved review (if any) and the leaders
+	//! they can rate: the website ORBAT's leaders plus this round's slotted leaders.
+	void LoadReviewForm(int playerId)
+	{
+		COA_PlayerRplToOwnerManager ownerManager = COA_PlayerRplToOwnerManager.GetForPlayer(playerId);
+		if (!ownerManager)
+			return;
+
+		int now = GetGame().GetWorld().GetWorldTime();
+		int last;
+		if (m_mLastReviewFormTime.Find(playerId, last) && now - last < REVIEW_COOLDOWN_MS)
+			return;
+		m_mLastReviewFormTime.Set(playerId, now);
+
+		array<string> leaderOptions = {};
+		AddInGameLeaders(playerId, leaderOptions);
+
+		string key = CRF_WebsiteApiConfig.GetGameServerKey();
+		RestApi rest = GetGame().GetRestApi();
+		RestContext context;
+		if (rest && !key.IsEmpty() && m_iMissionId > 0)
+			context = rest.GetContext(API_BASE_URL);
+
+		if (!context)
+		{
+			SendEmptyReviewForm(ownerManager, leaderOptions);
+			return;
+		}
+
+		CRF_AARReviewRequest request = new CRF_AARReviewRequest(this, playerId, false);
+		m_aReviewRequests.Insert(request);
+
+		string guid = SCR_PlayerIdentityUtils.GetPlayerIdentityId(playerId);
+		context.SetHeaders("Content-Type,application/json,x-game-server-key," + key);
+		context.GET(request.m_Callback, string.Format("%1?missionId=%2&guid=%3", AAR_REVIEW_ENDPOINT, m_iMissionId, EncodeQueryValue(guid)));
+	}
+
+	//------------------------------------------------------------------------------------------------
+	//! Server: post a player's review to the website on their behalf
+	void SubmitReview(int playerId, CRF_AARReviewData review)
+	{
+		COA_PlayerRplToOwnerManager ownerManager = COA_PlayerRplToOwnerManager.GetForPlayer(playerId);
+		if (!ownerManager)
+			return;
+
+		if (!review)
+		{
+			ownerManager.ReceiveAARReviewResult(false, "Your AAR couldn't be read - try again.");
+			return;
+		}
+
+		string error;
+		if (!review.Validate(error))
+		{
+			ownerManager.ReceiveAARReviewResult(false, error);
+			return;
+		}
+
+		if (m_iMissionId <= 0)
+		{
+			ownerManager.ReceiveAARReviewResult(false, "This round has no AAR page on coalitiongroup.net.");
+			return;
+		}
+
+		int now = GetGame().GetWorld().GetWorldTime();
+		int last;
+		if (m_mLastReviewSubmitTime.Find(playerId, last) && now - last < REVIEW_COOLDOWN_MS)
+		{
+			ownerManager.ReceiveAARReviewResult(false, "Please wait a few seconds before submitting again.");
+			return;
+		}
+
+		string key = CRF_WebsiteApiConfig.GetGameServerKey();
+		RestApi rest = GetGame().GetRestApi();
+		RestContext context;
+		if (rest && !key.IsEmpty())
+			context = rest.GetContext(API_BASE_URL);
+
+		if (!context)
+		{
+			ownerManager.ReceiveAARReviewResult(false, "This server isn't set up to send AARs to the website - write it on coalitiongroup.net instead.");
+			return;
+		}
+
+		m_mLastReviewSubmitTime.Set(playerId, now);
+
+		CRF_AARReviewRequest request = new CRF_AARReviewRequest(this, playerId, true);
+		m_aReviewRequests.Insert(request);
+
+		context.SetHeaders("Content-Type,application/json,x-game-server-key," + key);
+		context.POST(request.m_Callback, AAR_REVIEW_ENDPOINT, BuildReviewJson(playerId, review));
+	}
+
+	//------------------------------------------------------------------------------------------------
+	//! Called by CRF_AARReviewRequest when the website answers (or the request fails)
+	void OnReviewRequestFinished(CRF_AARReviewRequest request, bool ok)
+	{
+		HandleReviewResponse(request, ok);
+		m_aReviewRequests.RemoveItem(request);
+	}
+
+	//------------------------------------------------------------------------------------------------
+	protected void HandleReviewResponse(CRF_AARReviewRequest request, bool ok)
+	{
+		COA_PlayerRplToOwnerManager ownerManager = COA_PlayerRplToOwnerManager.GetForPlayer(request.m_iPlayerId);
+		if (!ownerManager)
+			return;
+
+		int httpCode = request.m_Callback.GetHttpCode();
+		string data = request.m_Callback.GetData();
+
+		if (request.m_bSubmit)
+		{
+			if (ok && httpCode == HttpCode.HTTP_CODE_200)
+			{
+				ownerManager.ReceiveAARReviewResult(true, "");
+				return;
+			}
+
+			string message = ExtractJsonError(data);
+			if (message.IsEmpty())
+				message = GetReviewErrorMessage(httpCode);
+
+			Print(string.Format("[CRF_AARManager] Website rejected AAR review from player %1 (HTTP %2): %3", request.m_iPlayerId, httpCode, message), LogLevel.WARNING);
+			ownerManager.ReceiveAARReviewResult(false, message);
+			return;
+		}
+
+		// Form load
+		array<string> leaderOptions = {};
+		CRF_AARReviewFormJson form = new CRF_AARReviewFormJson();
+		bool parsed = false;
+		if (ok && httpCode == HttpCode.HTTP_CODE_200 && !data.IsEmpty())
+		{
+			JsonLoadContext loadContext = new JsonLoadContext();
+			parsed = loadContext.LoadFromString(data) && loadContext.ReadValue("", form);
+		}
+
+		if (!parsed)
+		{
+			AddInGameLeaders(request.m_iPlayerId, leaderOptions);
+			SendEmptyReviewForm(ownerManager, leaderOptions);
+			return;
+		}
+
+		if (form.leaderOptions)
+		{
+			foreach (string option : form.leaderOptions)
+			{
+				if (!option.IsEmpty() && !leaderOptions.Contains(option))
+					leaderOptions.Insert(option);
+			}
+		}
+		AddInGameLeaders(request.m_iPlayerId, leaderOptions);
+
+		array<string> strings = {};
+		array<int> ints = {};
+		if (form.hasReview && form.review)
+		{
+			CRF_AARReviewData review = new CRF_AARReviewData();
+			review.m_sWentWell = form.review.went_well;
+			review.m_sWentBad = form.review.went_bad;
+			review.m_sFeedback = form.review.mission_feedback;
+			review.m_aCategories[0] = form.review.pacing;
+			review.m_aCategories[1] = form.review.objectives_rating;
+			review.m_aCategories[2] = form.review.terrain_rating;
+			review.m_aCategories[3] = form.review.assets_rating;
+			review.m_aCategories[4] = form.review.structure_rating;
+			if (form.review.leadershipRatings)
+			{
+				foreach (CRF_AARLeaderJson leaderJson : form.review.leadershipRatings)
+				{
+					if (!leaderJson || review.m_aLeaders.Count() >= CRF_AARReviewData.MAX_LEADERS)
+						continue;
+
+					CRF_AARLeaderRating leader = new CRF_AARLeaderRating();
+					leader.m_sName = leaderJson.leader_name;
+					leader.m_sReason = leaderJson.reason;
+					leader.m_aScores[0] = leaderJson.initiative;
+					leader.m_aScores[1] = leaderJson.clarity;
+					leader.m_aScores[2] = leaderJson.organization;
+					leader.m_aScores[3] = leaderJson.adaptability;
+					leader.m_aScores[4] = leaderJson.authority;
+					leader.m_iKarma = leaderJson.karma_vote;
+					review.m_aLeaders.Insert(leader);
+				}
+			}
+
+			review.Pack(strings, ints);
+		}
+
+		ownerManager.ReceiveAARReviewForm(form.linked, form.hasReview && !strings.IsEmpty(), strings, ints, leaderOptions);
+	}
+
+	//------------------------------------------------------------------------------------------------
+	protected void SendEmptyReviewForm(COA_PlayerRplToOwnerManager ownerManager, array<string> leaderOptions)
+	{
+		array<string> strings = {};
+		array<int> ints = {};
+		ownerManager.ReceiveAARReviewForm(true, false, strings, ints, leaderOptions);
+	}
+
+	//------------------------------------------------------------------------------------------------
+	//! Names of this round's slotted leaders still connected, except the requesting player
+	protected void AddInGameLeaders(int excludePlayerId, notnull array<string> names)
+	{
+		COA_SlottingManager slottingManager = COA_SlottingManager.GetInstance();
+		if (!slottingManager)
+			return;
+
+		array<int> leaderRoles = {COA_EGearRole.COMPANY_COMMANDER, COA_EGearRole.FIRST_SERGEANT, COA_EGearRole.PLATOON_LEADER,
+			COA_EGearRole.PLATOON_SERGEANT, COA_EGearRole.SQUAD_LEAD, COA_EGearRole.VEHICLE_LEAD, COA_EGearRole.INDIRECT_LEAD,
+			COA_EGearRole.LOGI_LEAD, COA_EGearRole.TEAM_LEAD};
+
+		array<int> playerIds = {};
+		GetGame().GetPlayerManager().GetPlayers(playerIds);
+		foreach (int playerId : playerIds)
+		{
+			if (playerId == excludePlayerId)
+				continue;
+
+			COA_SlotData slotData = slottingManager.GetPlayerSlotData(playerId);
+			if (!slotData || !leaderRoles.Contains(slotData.GetSlotRole()))
+				continue;
+
+			string name = GetGame().GetPlayerManager().GetPlayerName(playerId);
+			if (!name.IsEmpty() && !names.Contains(name))
+				names.Insert(name);
+		}
+	}
+
+	//------------------------------------------------------------------------------------------------
+	protected string BuildReviewJson(int playerId, CRF_AARReviewData review)
+	{
+		string guid = SCR_PlayerIdentityUtils.GetPlayerIdentityId(playerId);
+		string json = string.Format("{\"missionId\":%1,\"guid\":\"%2\",", m_iMissionId, EscapeJsonText(guid));
+		json += string.Format("\"went_well\":\"%1\",\"went_bad\":\"%2\",\"mission_feedback\":\"%3\",",
+			EscapeJsonText(review.m_sWentWell.Trim()), EscapeJsonText(review.m_sWentBad.Trim()), EscapeJsonText(review.m_sFeedback.Trim()));
+		json += string.Format("\"pacing\":%1,\"objectives_rating\":%2,\"terrain_rating\":%3,\"assets_rating\":%4,\"structure_rating\":%5,",
+			review.m_aCategories[0], review.m_aCategories[1], review.m_aCategories[2], review.m_aCategories[3], review.m_aCategories[4]);
+
+		json += "\"leadershipRatings\":[";
+		foreach (int i, CRF_AARLeaderRating leader : review.m_aLeaders)
+		{
+			if (i > 0)
+				json += ",";
+
+			json += string.Format("{\"leader_name\":\"%1\",\"initiative\":%2,\"clarity\":%3,\"organization\":%4,\"adaptability\":%5,\"authority\":%6,",
+				EscapeJsonText(leader.m_sName.Trim()), leader.m_aScores[0], leader.m_aScores[1], leader.m_aScores[2], leader.m_aScores[3], leader.m_aScores[4]);
+			json += string.Format("\"karma_vote\":%1,\"reason\":\"%2\"}", leader.m_iKarma, EscapeJsonText(leader.m_sReason.Trim()));
+		}
+		json += "]}";
+		return json;
+	}
+
+	//------------------------------------------------------------------------------------------------
+	//! JSON string escaping for free text (quotes, backslashes, line breaks, tabs)
+	protected static string EscapeJsonText(string value)
+	{
+		string escaped = value;
+		escaped.Replace("\\", "\\\\");
+		escaped.Replace("\"", "\\\"");
+		escaped.Replace("\r", "");
+		escaped.Replace("\n", "\\n");
+		escaped.Replace("\t", "\\t");
+		return escaped;
+	}
+
+	//------------------------------------------------------------------------------------------------
+	//! The "error" text of a website error response ({"error":"..."}), or ""
+	protected static string ExtractJsonError(string data)
+	{
+		int keyIndex = data.IndexOf("\"error\":\"");
+		if (keyIndex < 0)
+			return "";
+
+		int start = keyIndex + 9;
+		string message;
+		for (int i = start, length = data.Length(); i < length; i++)
+		{
+			string character = data.Get(i);
+			if (character == "\"")
+				break;
+
+			if (character == "\\" && i + 1 < length)
+			{
+				i++;
+				character = data.Get(i);
+			}
+
+			message += character;
+		}
+
+		return message;
+	}
+
+	//------------------------------------------------------------------------------------------------
+	protected static string GetReviewErrorMessage(int httpCode)
+	{
+		switch (httpCode)
+		{
+			case 401: return "This server's website key was rejected - write your AAR on coalitiongroup.net instead.";
+			case 403: return "Link your Arma GUID on your coalitiongroup.net profile to submit an AAR in game.";
+			case 404: return "This round has no AAR page on coalitiongroup.net.";
+		}
+
+		return "The website couldn't save your AAR right now - try again in a moment.";
+	}
+
+//=============================================================================================================================================================================================================================================================================================================================================================
 //	 MAP MARKERS
 //=============================================================================================================================================================================================================================================================================================================================================================
 
@@ -337,5 +801,75 @@ class CRF_AARManager
 
 		if (!m_mPendingMarkers.IsEmpty())
 			GetGame().GetCallqueue().CallLater(SendMarkerBatch, MARKER_BATCH_INTERVAL_MS, false);
+	}
+}
+
+
+//------------------------------------------------------------------------------------------------
+//! One in-flight POST of a player's mission rating (see CRF_AARManager.SubmitRating)
+class CRF_MissionRatingRequest
+{
+	ref RestCallback m_Callback = new RestCallback();
+	int m_iPlayerId;
+	int m_iRating;
+	protected CRF_AARManager m_Owner;
+
+	//------------------------------------------------------------------------------------------------
+	void CRF_MissionRatingRequest(CRF_AARManager owner, int playerId, int rating)
+	{
+		m_Owner = owner;
+		m_iPlayerId = playerId;
+		m_iRating = rating;
+		m_Callback.SetOnSuccess(OnSuccess);
+		m_Callback.SetOnError(OnError);
+	}
+
+	//------------------------------------------------------------------------------------------------
+	protected void OnSuccess(RestCallback callback)
+	{
+		if (m_Owner)
+			m_Owner.OnRatingRequestFinished(this, callback.GetHttpCode() == HttpCode.HTTP_CODE_200);
+	}
+
+	//------------------------------------------------------------------------------------------------
+	protected void OnError(RestCallback callback)
+	{
+		if (m_Owner)
+			m_Owner.OnRatingRequestFinished(this, false);
+	}
+}
+
+
+//------------------------------------------------------------------------------------------------
+//! One in-flight written-AAR request to the website: a form load (GET) or a submission (POST)
+class CRF_AARReviewRequest
+{
+	ref RestCallback m_Callback = new RestCallback();
+	int m_iPlayerId;
+	bool m_bSubmit;
+	protected CRF_AARManager m_Owner;
+
+	//------------------------------------------------------------------------------------------------
+	void CRF_AARReviewRequest(CRF_AARManager owner, int playerId, bool submit)
+	{
+		m_Owner = owner;
+		m_iPlayerId = playerId;
+		m_bSubmit = submit;
+		m_Callback.SetOnSuccess(OnSuccess);
+		m_Callback.SetOnError(OnError);
+	}
+
+	//------------------------------------------------------------------------------------------------
+	protected void OnSuccess(RestCallback callback)
+	{
+		if (m_Owner)
+			m_Owner.OnReviewRequestFinished(this, true);
+	}
+
+	//------------------------------------------------------------------------------------------------
+	protected void OnError(RestCallback callback)
+	{
+		if (m_Owner)
+			m_Owner.OnReviewRequestFinished(this, false);
 	}
 }

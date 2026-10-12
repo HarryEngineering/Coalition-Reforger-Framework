@@ -14,6 +14,11 @@ class COA_AARMenu: ChimeraMenuBase
 	//----------------------------------------
 	protected static const ResourceName STATS_LAYOUT = "{7CDA3F81B4920E56}UI/layouts/HUD/Intro/CRF_AARStats.layout";
 	protected static const ResourceName CHANNEL_PLAYER_LAYOUT = "{68D74FF57296AFFB}UI/Listbox/PlayerListboxElementVON.layout";
+	// m_iChannelId of the "Open <group> channel" row, which recreates the player's group channel
+	protected static const int OPEN_GROUP_CHANNEL_ID = -2;
+	protected static const ResourceName RATING_LAYOUT = "{7C10B6E2A4F95D31}UI/layouts/HUD/AAR/CRF_AARRating.layout";
+	// Unselected rating button (linear colour, matches RateBG in the layout)
+	protected static const ref Color RATING_BUTTON_COLOR = new Color(0.0116, 0.0137, 0.0212, 1);
 	protected static const string WEBSITE_AAR_URL = "coalitiongroup.net/aar";
 	// Mission whose AAR link was last copied to the clipboard, so reopening the screen doesn't copy again
 	protected static int s_iClipboardMissionId;
@@ -63,6 +68,11 @@ class COA_AARMenu: ChimeraMenuBase
 	protected TextWidget m_wTimeText;
 	protected TextWidget m_wPlayersText;
 	protected ButtonWidget m_wBackButton;
+	protected Widget m_wRatingRoot;
+	protected Widget m_wRatingCard;
+	protected TextWidget m_wRatingStatus;
+	protected int m_iPendingRating; // sent, server hasn't answered yet
+	protected bool m_bLastRatingFailed;
 
 	//----------------------------------------
 	// Core Components
@@ -138,6 +148,7 @@ class COA_AARMenu: ChimeraMenuBase
 		SetupInputHandlers();
 		SetupMissionInfo();
 		SetupResultAndLink();
+		CreateRatingCard();
 		SetupFactionFlags();
 		SetupFactionColors();
 		SetupFactionButtons();
@@ -180,6 +191,8 @@ class COA_AARMenu: ChimeraMenuBase
 	{
 		super.OnMenuClose();
 
+		SetMapWheelBlocked(false);
+
 		COA_SlottingManager slottingManager = COA_SlottingManager.GetInstance();
 		if (slottingManager)
 		{
@@ -191,6 +204,9 @@ class COA_AARMenu: ChimeraMenuBase
 			m_MenuManager.GetOnPlayerChannelChanged().Remove(OnPlayerChannelChanged);
 
 		CRF_AARSessionStats.s_OnMissionIdReceived.Remove(UpdateLinkText);
+		CRF_AARSessionStats.s_OnRatingResult.Remove(OnRatingResult);
+		CRF_AARReviewSession.s_OnSubmitResult.Remove(OnReviewSubmitResult);
+		CRF_AARReviewSession.s_OnFormReceived.Remove(UpdateRatingCard);
 
 		// Don't leave entrance/drawer animations running against widgets that are going away
 		foreach (Widget animatedWidget : m_aAnimatedWidgets)
@@ -238,9 +254,70 @@ class COA_AARMenu: ChimeraMenuBase
 	}
 
 	//------------------------------------------------------------------------------------------------
+	//------------------------------------------------------------------------------------------------
+	//! Lists drawn over the map whose mouse wheel scrolling shouldn't zoom it
+	protected static const ref array<string> MAP_WHEEL_BLOCKERS = {"PlayerList", "RoleFrame"};
+	protected bool m_bMapWheelBlocked;
+
+	//------------------------------------------------------------------------------------------------
+	protected void UpdateMapWheelBlock()
+	{
+		bool block = false;
+		foreach (string name : MAP_WHEEL_BLOCKERS)
+		{
+			if (IsCursorOver(m_wRoot.FindAnyWidget(name)))
+			{
+				block = true;
+				break;
+			}
+		}
+
+		SetMapWheelBlocked(block);
+	}
+
+	//------------------------------------------------------------------------------------------------
+	//! Wheel zoom on/off via SCR_MapCursorModule's journal flag - the only thing that flag gates is
+	//! mouse wheel zoom (the AAR map has no journal). Modding SCR_MapCursorModule instead breaks it:
+	//! the map config can then no longer create the module ("Unknown class").
+	protected void SetMapWheelBlocked(bool blocked)
+	{
+		if (blocked == m_bMapWheelBlocked)
+			return;
+
+		SCR_MapEntity mapEntity = SCR_MapEntity.GetMapInstance();
+		if (!mapEntity)
+			return;
+
+		SCR_MapCursorModule cursorModule = SCR_MapCursorModule.Cast(mapEntity.GetMapModule(SCR_MapCursorModule));
+		if (!cursorModule)
+			return;
+
+		cursorModule.SetJournalVisibility(blocked);
+		m_bMapWheelBlocked = blocked;
+	}
+
+	//------------------------------------------------------------------------------------------------
+	protected bool IsCursorOver(Widget widget)
+	{
+		if (!widget || !widget.IsVisibleInHierarchy())
+			return false;
+
+		int mouseX, mouseY;
+		WidgetManager.GetMousePos(mouseX, mouseY);
+
+		float left, top, width, height;
+		widget.GetScreenPos(left, top);
+		widget.GetScreenSize(width, height);
+		return mouseX >= left && mouseX <= left + width && mouseY >= top && mouseY <= top + height;
+	}
+
+	//------------------------------------------------------------------------------------------------
 	override void OnMenuUpdate(float tDelta)
 	{
 		super.OnMenuUpdate(tDelta);
+
+		// Scrolling the voice channels or the roster must not also zoom the map underneath
+		UpdateMapWheelBlock();
 
 		if (m_Gamemode && m_Gamemode.m_GamemodeState != COA_EGamemodeState.AAR)
 			m_bAllowClose = true;
@@ -412,6 +489,9 @@ class COA_AARMenu: ChimeraMenuBase
 	//------------------------------------------------------------------------------------------------
 	protected void UpdateLinkText()
 	{
+		// The rating card waits on the same mission ID
+		UpdateRatingCard();
+
 		if (!m_wLinkText)
 			return;
 
@@ -431,6 +511,149 @@ class COA_AARMenu: ChimeraMenuBase
 		}
 
 		m_wLinkText.SetText(string.Format("Full AAR: %1/%2  (link copied to clipboard)", WEBSITE_AAR_URL, missionId));
+	}
+
+	//------------------------------------------------------------------------------------------------
+	//! "Rate this mission" card: five buttons, shown once the round's website page is known
+	protected void CreateRatingCard()
+	{
+		m_wRatingRoot = GetGame().GetWorkspace().CreateWidgets(RATING_LAYOUT, m_wRoot);
+		if (!m_wRatingRoot)
+			return;
+
+		m_wRatingCard = m_wRatingRoot.FindAnyWidget("RatingCard");
+		m_wRatingStatus = TextWidget.Cast(m_wRatingRoot.FindAnyWidget("RatingStatus"));
+
+		for (int i = 1; i <= 5; i++)
+		{
+			ButtonWidget button = ButtonWidget.Cast(m_wRatingRoot.FindAnyWidget("Rate" + i));
+			if (!button)
+				continue;
+
+			SCR_ButtonTextComponent buttonComponent = SCR_ButtonTextComponent.Cast(button.FindHandler(SCR_ButtonTextComponent));
+			if (buttonComponent)
+				buttonComponent.m_OnClicked.Insert(OnRateClicked);
+		}
+
+		// "Write full AAR": the website's review form, in game (CRF_AARReviewMenu)
+		Widget writeButton = m_wRatingRoot.FindAnyWidget("WriteAARButton");
+		if (writeButton)
+		{
+			SCR_ButtonTextComponent writeComponent = SCR_ButtonTextComponent.Cast(writeButton.FindHandler(SCR_ButtonTextComponent));
+			if (writeComponent)
+				writeComponent.m_OnClicked.Insert(OnWriteAARClicked);
+		}
+
+		CRF_AARReviewSession.s_OnSubmitResult.Insert(OnReviewSubmitResult);
+		CRF_AARReviewSession.s_OnFormReceived.Insert(UpdateRatingCard);
+		CRF_AARSessionStats.s_OnRatingResult.Insert(OnRatingResult);
+		UpdateRatingCard();
+	}
+
+	//------------------------------------------------------------------------------------------------
+	protected void OnWriteAARClicked(SCR_ButtonBaseComponent button)
+	{
+		if (CRF_AARSessionStats.s_iMissionId <= 0)
+			return;
+
+		GetGame().GetMenuManager().OpenMenu(ChimeraMenuPreset.CRF_AARReviewMenu);
+	}
+
+	//------------------------------------------------------------------------------------------------
+	protected void OnReviewSubmitResult(bool saved, string message)
+	{
+		UpdateRatingCard();
+	}
+
+	//------------------------------------------------------------------------------------------------
+	protected void OnRateClicked(SCR_ButtonBaseComponent button)
+	{
+		if (!button || !button.GetRootWidget())
+			return;
+
+		// Buttons are named Rate1 .. Rate5
+		string buttonName = button.GetRootWidget().GetName();
+		int rating = buttonName.Substring(buttonName.Length() - 1, 1).ToInt();
+		if (rating < 1 || rating > 5)
+			return;
+
+		COA_PlayerRplToAuthorityManager authorityManager = COA_PlayerRplToAuthorityManager.GetInstance();
+		if (!authorityManager)
+			return;
+
+		authorityManager.SubmitMissionRating(rating);
+
+		m_iPendingRating = rating;
+		UpdateRatingCard();
+	}
+
+	//------------------------------------------------------------------------------------------------
+	protected void OnRatingResult()
+	{
+		m_iPendingRating = 0;
+		m_bLastRatingFailed = !CRF_AARSessionStats.s_bRatingSaved;
+		UpdateRatingCard();
+	}
+
+	//------------------------------------------------------------------------------------------------
+	protected void UpdateRatingCard()
+	{
+		if (!m_wRatingCard)
+			return;
+
+		m_wRatingCard.SetVisible(CRF_AARSessionStats.s_iMissionId > 0);
+
+		Widget writeFrame = m_wRatingRoot.FindAnyWidget("WriteAARFrame");
+		if (writeFrame)
+		{
+			TextWidget writeText = TextWidget.Cast(writeFrame.FindAnyWidget("ButtonText"));
+			CRF_AARReviewSession.SyncMission();
+
+			// Ask once per round whether this player already wrote an AAR, so the label is right
+			if (CRF_AARSessionStats.s_iMissionId > 0 && !CRF_AARReviewSession.s_bFormRequested)
+			{
+				COA_PlayerRplToAuthorityManager authorityManager = COA_PlayerRplToAuthorityManager.GetInstance();
+				if (authorityManager)
+				{
+					CRF_AARReviewSession.s_bFormRequested = true;
+					authorityManager.RequestAARReviewForm();
+				}
+			}
+
+			if (writeText && CRF_AARReviewSession.s_bHasReview)
+				writeText.SetText("EDIT YOUR AAR  ›");
+			else if (writeText)
+				writeText.SetText("WRITE FULL AAR  ›");
+		}
+
+		int shownRating = CRF_AARSessionStats.s_iRating;
+		if (m_iPendingRating > 0)
+			shownRating = m_iPendingRating;
+
+		for (int i = 1; i <= 5; i++)
+		{
+			Widget background = m_wRatingRoot.FindAnyWidget("RateBG" + i);
+			if (!background)
+				continue;
+
+			// Fill up to the chosen rating, like stars
+			if (i <= shownRating)
+				background.SetColor(COA_PhaseUI.ACCENT);
+			else
+				background.SetColor(RATING_BUTTON_COLOR);
+		}
+
+		if (!m_wRatingStatus)
+			return;
+
+		if (m_iPendingRating > 0)
+			m_wRatingStatus.SetText("Sending...");
+		else if (m_bLastRatingFailed)
+			m_wRatingStatus.SetText("Couldn't save your rating - try again");
+		else if (CRF_AARSessionStats.s_iRating > 0)
+			m_wRatingStatus.SetText(string.Format("Thanks - you rated it %1/5. Click to change.", CRF_AARSessionStats.s_iRating));
+		else
+			m_wRatingStatus.SetText("1 = poor  ·  5 = great");
 	}
 
 	//------------------------------------------------------------------------------------------------
@@ -758,6 +981,39 @@ class COA_AARMenu: ChimeraMenuBase
 
 			AddChannelRows(channelIndex, channelNames[channelIndex], members, channelIndex == localChannel, playerManager);
 		}
+
+		AddOpenGroupChannelRow(channelNames);
+	}
+
+	//------------------------------------------------------------------------------------------------
+	//! Empty channels are removed as soon as the last person leaves, so a group that wandered off can
+	//! lose its channel. When the local player's group channel is gone, offer a row to reopen it.
+	protected void AddOpenGroupChannelRow(array<string> channelNames)
+	{
+		COA_SlottingManager slottingManager = COA_SlottingManager.GetInstance();
+		if (!slottingManager)
+			return;
+
+		int localPlayerId = SCR_PlayerController.GetLocalPlayerId();
+		Faction faction = slottingManager.GetPlayerSlotFaction(localPlayerId, true);
+		SCR_AIGroup group = slottingManager.GetPlayerSlotGroup(localPlayerId);
+		if (!faction || !group)
+			return;
+
+		if (channelNames.Contains(CRF_AARManager.GetGroupChannelName(faction.GetFactionKey(), group)))
+			return;
+
+		int rowIndex = m_cChannelListBoxComponent.AddItemChannel(null, string.Format("+ Open %1 channel", group.GetCustomNameWithOriginal()));
+		COA_ListBoxElementComponent rowComponent = m_cChannelListBoxComponent.GetCRFElementComponent(rowIndex);
+		if (!rowComponent)
+			return;
+
+		rowComponent.m_iChannelId = OPEN_GROUP_CHANNEL_ID;
+		rowComponent.GetChannelButton().m_OnClicked.Insert(JoinSelectedChannelDelayed);
+
+		Widget rowRoot = rowComponent.GetRootWidget();
+		if (rowRoot)
+			COA_UIHoverEffect.Attach(rowRoot.FindAnyWidget("SlotButton"), rowRoot.FindAnyWidget("Image0"));
 	}
 
 	//------------------------------------------------------------------------------------------------
@@ -767,9 +1023,14 @@ class COA_AARMenu: ChimeraMenuBase
 		if (isLocalChannel)
 			headerText = "> " + headerText;
 
+		// Another faction's side channel: shown, but only that faction (or staff) can join it
+		bool canJoin = CanJoinChannel(channelName);
+		if (!canJoin)
+			headerText += string.Format("  ·  %1 only", COA_MenuManager.GetFactionChannelOwner(channelName));
+
 		int headerIndex = m_cChannelListBoxComponent.AddItemChannel(null, headerText);
 		COA_ListBoxElementComponent channelComponent = m_cChannelListBoxComponent.GetCRFElementComponent(headerIndex);
-		if (channelComponent)
+		if (channelComponent && canJoin)
 		{
 			channelComponent.m_iChannelId = channelIndex;
 			channelComponent.GetChannelButton().m_OnClicked.Insert(JoinSelectedChannelDelayed);
@@ -799,6 +1060,27 @@ class COA_AARMenu: ChimeraMenuBase
 	}
 
 	//------------------------------------------------------------------------------------------------
+	//! Side channels are restricted to their faction (checked again by the server on join)
+	protected bool CanJoinChannel(string channelName)
+	{
+		FactionKey channelFaction = COA_MenuManager.GetFactionChannelOwner(channelName);
+		if (channelFaction.IsEmpty())
+			return true;
+
+		int localPlayerId = SCR_PlayerController.GetLocalPlayerId();
+		COA_PermissionManager permissionManager = COA_PermissionManager.GetInstance();
+		if (SCR_Global.IsAdmin(localPlayerId) || (permissionManager && permissionManager.IsModerator()))
+			return true;
+
+		COA_SlottingManager slottingManager = COA_SlottingManager.GetInstance();
+		if (!slottingManager)
+			return false;
+
+		Faction localFaction = slottingManager.GetPlayerSlotFaction(localPlayerId, true);
+		return localFaction && localFaction.GetFactionKey() == channelFaction;
+	}
+
+	//------------------------------------------------------------------------------------------------
 	protected void JoinSelectedChannelDelayed()
 	{
 		GetGame().GetCallqueue().Call(JoinSelectedChannel);
@@ -822,6 +1104,12 @@ class COA_AARMenu: ChimeraMenuBase
 
 		int localPlayerId = SCR_PlayerController.GetLocalPlayerId();
 		int channelId = selectedComponent.m_iChannelId;
+		if (channelId == OPEN_GROUP_CHANNEL_ID)
+		{
+			authorityManager.RequestGroupVoiceChannel();
+			return;
+		}
+
 		if (channelId < 0 || channelId >= m_MenuManager.m_aVONChannels.Count() || channelId == m_MenuManager.GetChannel(localPlayerId))
 			return;
 
